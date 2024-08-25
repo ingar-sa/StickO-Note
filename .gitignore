@@ -130,6 +130,7 @@ Thumbs.db
 # Build Folders
 # =========================
 build/
+Build/
 
 .cache
 .clang-format

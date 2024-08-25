@@ -1,0 +1,33 @@
+Outline of what sticko-note is:
+
+Purpose:
+    People find it useful to write notes for themselves in order to remember and organize.
+    The purpose of StickO-Note is to provide the user a way to accomplish this on their computer.
+
+Function:
+    Create and manage digital canvases
+    Generate, edit, and organize virtual sticky notes within these canvases
+    Customize the appearance and content of individual notes
+    Facilitate the viewing and navigation of multiple notes and canvases
+
+Usage:
+    Users interact with canvases through a graphical interface
+    Notes are manipulated via mouse clicks and keyboard input
+    Navigation between canvases and notes is done through menu options or shortcuts
+    Customization of notes is achieved through a properties panel or right-click options
+
+Implementation:
+    Default canvas is loaded on start-up.
+    List all canvases. 
+    Open canvases.
+    See and list all sticky notes in canvas.
+    Create new canvas.
+    Open canvases in new window.
+
+    Create and edit sticky note:
+        Title
+        Body
+        Color
+        Text color
+        Size
+        (Images in future, dw about it for now)
