@@ -13,6 +13,7 @@ SON_NOTE_COUNT :: 1024
 text_field :: struct {
 	Rect:      rl.Rectangle,
 	TextColor: rl.Color,
+	Font:      rl.Font,
 	FontSize:  i32,
 	Text:      string,
 }
@@ -34,8 +35,6 @@ note_collection :: struct {
 	SelectedNote:   uint,
 	// HotNote TODO(ingar): See casey's video on imgui again
 	NoteIsSelected: bool,
-	// NOTE(ingar): Make dynamic? 
-	// Currently note deletion does not compact the array, it just keeps going
 	Notes:          []note,
 }
 
@@ -49,9 +48,16 @@ AllocateNoteCollection :: proc(Size: u64, Allocator := context.allocator) -> ^no
 
 RenderTextField :: proc(Field: ^text_field) {
 	CString := str.clone_to_cstring(Field.Text, context.temp_allocator)
-	DrawPosX := i32(Field.Rect.x)
-	DrawPosY := i32(Field.Rect.y)
-	rl.DrawText(CString, DrawPosX, DrawPosY, Field.FontSize, Field.TextColor)
+	DrawPos := rl.Vector2{f32(Field.Rect.x), f32(Field.Rect.y)}
+	rl.DrawTextEx(
+		Field.Font,
+		CString,
+		DrawPos,
+		f32(Field.FontSize),
+		/* 1 seems to be correct, but should be obs about this in the future */
+		1,
+		Field.TextColor,
+	)
 }
 
 mouse_event :: struct {
@@ -84,6 +90,54 @@ RemoveNote :: proc(Collection: ^note_collection, Idx: u64) {
 		Collection.Count -= 1
 	}
 }
+// GlyphInfo{value = !, offsetX = 0, offsetY = 0, advanceX = 0, image = Image{data = 0xB6F850, width = 1, height = 10, mipmaps = 1, format = "UNCOMPRESSED_GRAY_ALPHA"}}
+WrapTextFieldString :: proc(Field: ^text_field) {
+	if len(Field.Text) == 0 {
+		return
+	}
+
+	FieldWidth := i32(Field.Rect.width)
+	FieldHeight := i32(Field.Rect.height)
+	RemainingWidth := FieldWidth
+
+	GlyphInfo := rl.GetGlyphInfo(Field.Font, rune(Field.Text[0]))
+	// NOTE(ingar): Does the image width take the spacing into account, and height line "aspacing"?
+
+	LinesAvailable := FieldHeight / GlyphInfo.image.height
+	RemainingLines := LinesAvailable
+	RemainingWidth -= GlyphInfo.image.width
+
+	fmt.println(Field.Font)
+	fmt.println(GlyphInfo)
+	fmt.println(LinesAvailable)
+
+	StringBuilder: str.Builder
+	str.builder_init(&StringBuilder)
+	defer str.builder_destroy(&StringBuilder)
+	str.write_rune(&StringBuilder, rune(Field.Text[0]))
+
+	for Rune in Field.Text[1:] {
+		if Rune == '\n' {
+			str.write_rune(&StringBuilder, Rune)
+			RemainingWidth = FieldWidth
+			RemainingLines -= 1
+			continue
+		}
+
+		GlyphInfo = rl.GetGlyphInfo(Field.Font, Rune)
+		GlyphWidth := GlyphInfo.image.width
+		RemainingWidth -= GlyphWidth
+		if RemainingWidth < 0 {
+			str.write_rune(&StringBuilder, '\n')
+			RemainingWidth = FieldWidth - GlyphWidth
+			RemainingLines -= 1
+		}
+
+		str.write_rune(&StringBuilder, Rune)
+	}
+
+	Field.Text = str.to_string(StringBuilder)
+}
 
 AddNewNote :: proc(Collection: ^note_collection, Coord1, Coord2: rl.Vector2, Color: rl.Color) {
 	if Coord1.x == Coord2.x || Coord1.y == Coord2.y {
@@ -98,12 +152,13 @@ AddNewNote :: proc(Collection: ^note_collection, Coord1, Coord2: rl.Vector2, Col
 	Width := RightX - LeftX
 	Height := BottomY - TopY
 
-	//TextField := new(text_field)
 	TextField := text_field{}
 	TextField.Rect = {LeftX + 5, TopY + 5, Width - 10, Height - 10}
-	TextField.Text = "Toodiloo!"
+	TextField.Text = "Toodiloo!\nNewline baby!"
+	TextField.Font = rl.GetFontDefault()
 	TextField.FontSize = 12
 	TextField.TextColor = rl.BLACK
+	WrapTextFieldString(&TextField)
 
 	NewNote := note{{LeftX, TopY, Width, Height}, Color, TextField, i64(Collection.Count)}
 	if Collection.Count < Collection.Size {
@@ -115,6 +170,7 @@ AddNewNote :: proc(Collection: ^note_collection, Coord1, Coord2: rl.Vector2, Col
 main :: proc() {
 	rl.InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "StickO-Note")
 	rl.SetTargetFPS(144)
+	rl.SetWindowMonitor(0)
 
 	SonMemory, Err := make([]u8, 128 * mem.Megabyte)
 	defer delete(SonMemory)
@@ -144,6 +200,7 @@ main :: proc() {
 		rl.BEIGE,
 		rl.MAGENTA,
 	}
+
 	i := 0
 	for !rl.WindowShouldClose() {
 		rl.BeginDrawing()
@@ -198,8 +255,8 @@ main :: proc() {
 			RemoveNote(SonState.NoteCollection, u64(ToDelete))
 		}
 
-		free_all(context.temp_allocator)
 		rl.EndDrawing()
+		free_all(context.temp_allocator)
 	}
 
 	rl.CloseWindow()
