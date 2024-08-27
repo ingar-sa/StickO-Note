@@ -1,4 +1,11 @@
+/*
+    Copyright (c) 2024 Ingar Solveigson Asheim
+    This file is part of StickO-Note, available under a custom license.
+    See the LICENSE file in the root directory for full license details.
+*/
+
 package son
+
 
 import "core:fmt"
 import "core:mem"
