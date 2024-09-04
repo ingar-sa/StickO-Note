@@ -122,7 +122,7 @@ WrapTextFieldString :: proc(Field: ^text_field) {
 	str.builder_init(&StringBuilder)
 	defer str.builder_destroy(&StringBuilder)
 	str.write_rune(&StringBuilder, rune(Field.Text[0]))
-
+    
 	for Rune in Field.Text[1:] {
 		if Rune == '\n' {
 			str.write_rune(&StringBuilder, Rune)
