@@ -135,3 +135,4 @@ Build/
 .cache
 .clang-format
 src/isa.h
+Canvas*

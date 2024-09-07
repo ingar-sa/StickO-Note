@@ -9,6 +9,7 @@ package son
 
 import "core:fmt"
 import "core:mem"
+import "core:os"
 import str "core:strings"
 
 import rl "vendor:raylib"
@@ -80,6 +81,7 @@ mouse_state :: struct {
 }
 
 son_state :: struct {
+    Arena:          mem.Arena,
     Initialized:    bool,
     MouseState:     ^mouse_state,
     NoteCollection: ^note_collection,
@@ -174,6 +176,24 @@ AddNewNote :: proc(Collection: ^note_collection, Coord1, Coord2: rl.Vector2, Col
     }
 }
 
+ReadCanvasFromFile :: proc(FileName: string, Allocator: mem.Allocator) -> []u8 {
+
+}
+
+SaveCanvasToFile :: proc(SonState: ^son_state) {
+    File, OpenError := os.open("CanvasX", os.O_WRONLY | os.O_CREATE, 0o755)
+    if OpenError != os.ERROR_NONE {
+        fmt.println("Error opening file!", OpenError)
+        return
+    }
+    defer os.close(File)
+
+    BytesWritten, WriteError := os.write(File, SonState.Arena.data[:SonState.Arena.offset])
+    if WriteError != os.ERROR_NONE {
+        fmt.println("Error writing to file!", WriteError)
+    }
+}
+
 main :: proc() {
     rl.InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "StickO-Note")
     rl.SetTargetFPS(144)
@@ -192,6 +212,7 @@ main :: proc() {
     MouseState := new(mouse_state)
     NoteCollection := AllocateNoteCollection(SON_NOTE_COUNT)
 
+    SonState.Arena = SonArena
     SonState.MouseState = MouseState
     SonState.NoteCollection = NoteCollection
     SonState.Initialized = true
@@ -237,21 +258,35 @@ main :: proc() {
             }
         }
 
-        // NOTE(ingar): Add button to return to origin?
         if rl.IsMouseButtonDown(.RIGHT) {
             MouseDelta := rl.GetMouseDelta()
-            Camera.target -= MouseDelta
+            Camera.target -= MouseDelta / Camera.zoom
         }
 
-        // NOTE(ingar): Cap zoom?
-        Camera.zoom += rl.GetMouseWheelMove() * 0.15
+        if rl.IsKeyPressed(.ZERO) {
+            Camera.target = {WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2}
+            Camera.offset = {WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2}
+            Camera.zoom = 1
+        }
 
-        if FrameCount % 144 == 0 {
+        if rl.IsKeyDown(.LEFT_SHIFT) && rl.IsKeyPressed(.S) {
+            SaveCanvasToFile(SonState)
+        }
+
+        Camera.zoom += rl.GetMouseWheelMove() * 0.15 * Camera.zoom
+        if Camera.zoom <= 0.05 {
+            Camera.zoom = 0.05
+        }
+
+
+        if FrameCount % 144 == 0 && false {
             fmt.println(
                 "Mouse world pos:",
                 MouseWorldPos,
                 "\nScreen world pos:",
                 CurrentScreenWorldPos,
+                "\nCamera:",
+                Camera,
                 "\n",
             )
         }
@@ -274,18 +309,23 @@ main :: proc() {
             MouseIsOverNote := rl.CheckCollisionPointRec(MouseWorldPos, Note.Rect)
             if MouseIsOverNote {
                 // TODO(ingar): Highlights all notes under mouse, not just top-most
-                Shadow := rl.Rectangle {
-                    Note.Rect.x + 5,
-                    Note.Rect.y + 5,
-                    Note.Rect.width + 5,
-                    Note.Rect.height + 5,
+                OutlineWidth := f32(8) + Note.Rect.width / 50 + Note.Rect.height / 50
+                Outline := rl.Rectangle {
+                    Note.Rect.x - OutlineWidth,
+                    Note.Rect.y - OutlineWidth,
+                    Note.Rect.width + 2 * OutlineWidth,
+                    Note.Rect.height + 2 * OutlineWidth,
                 }
-                ShadowColor := rl.Color{0, 0, 0, 70}
+                OutlineColor := Note.Color
+                OutlineColor.a = 100
+                //OutlineWidth := 5 + Note.Rect.width / 50 + Note.Rect.height / 50
 
-                rl.DrawRectangleRec(Shadow, ShadowColor)
+                //rl.DrawRectangleRoundedLines(Outline, 0.05, 0, ShadowWidth, ShadowColor)
+                rl.DrawRectangleLinesEx(Outline, OutlineWidth, OutlineColor)
                 rl.DrawRectangleRec(Note.Rect, Note.Color)
                 RenderTextField(&Note.TextField)
 
+                // NOTE(ingar): Ensures only the top-most one is deleted if there are overlapping notes
                 if rl.IsKeyPressed(.D) {
                     TopMostNote = i
                 }
