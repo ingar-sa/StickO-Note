@@ -46,7 +46,7 @@ note_collection :: struct {
 }
 
 AllocateNoteCollection :: proc(Size: u64, Allocator := context.allocator) -> ^note_collection {
-    Collectiocn := new(note_collection, Allocator)
+    Collection := new(note_collection, Allocator)
     Collection.Size = Size
     Collection.Notes = make([]note, Size, Allocator)
 
@@ -178,11 +178,11 @@ main :: proc() {
     rl.InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "StickO-Note")
     rl.SetTargetFPS(144)
     rl.SetWindowMonitor(0)
+    WindowConfig := rl.ConfigFlags{.WINDOW_RESIZABLE}
+    rl.SetWindowState(WindowConfig)
 
     SonMemory, Err := make([]u8, 128 * mem.Megabyte)
-    defer delete(SonMemory)
-    fmt.println("Err ", Err)
-
+    defer delete(SonMemory) // NOTE(ingar): Strictly not necessary since it's alive for the entire program
     SonArena: mem.Arena
     mem.arena_init(&SonArena, SonMemory)
     SonAllocator := mem.arena_allocator(&SonArena)
@@ -196,8 +196,7 @@ main :: proc() {
     SonState.NoteCollection = NoteCollection
     SonState.Initialized = true
 
-    TextColor: rl.Color = rl.BLACK
-
+    TextColor := rl.BLACK
     Colors := []rl.Color {
         rl.LIGHTGRAY,
         rl.YELLOW,
@@ -208,62 +207,125 @@ main :: proc() {
         rl.MAGENTA,
     }
 
-    i := 0
-    for !rl.WindowShouldClose() {
-        rl.BeginDrawing()
+    Camera := rl.Camera2D{}
+    Camera.target = {WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2}
+    Camera.offset = {WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2}
+    Camera.zoom = 1
 
-        rl.ClearBackground(rl.DARKGRAY)
+    FrameCount := 0
+    for !rl.WindowShouldClose() {
+        CurrentScreenWorldPos := rl.GetScreenToWorld2D(Camera.target, Camera)
+        MouseScreenPos := rl.GetMousePosition()
+        MouseWorldPos := rl.GetScreenToWorld2D(MouseScreenPos, Camera)
 
         if rl.IsMouseButtonPressed(.LEFT) {
             SonState.MouseState.LClicked = true
-            SonState.MouseState.PrevLClickPos = rl.GetMousePosition()
-        }
-        if rl.IsMouseButtonPressed(.RIGHT) {
-            SonState.MouseState.RClicked = true
-            SonState.MouseState.PrevRClickPos = rl.GetMousePosition()
+            SonState.MouseState.PrevLClickPos = MouseWorldPos
         }
 
         if rl.IsMouseButtonReleased(.LEFT) {
             if SonState.MouseState.LClicked {
-                MousePos := rl.GetMousePosition()
-                NoteColor := Colors[i % len(Colors)]
+
+                NoteColor := Colors[FrameCount % len(Colors)]
                 AddNewNote(
                     SonState.NoteCollection,
                     SonState.MouseState.PrevLClickPos,
-                    MousePos,
+                    MouseWorldPos,
                     NoteColor,
                 )
                 SonState.MouseState.LClicked = false
-                i += 1
             }
         }
 
-        RClickPos := rl.Vector2{}
-        if rl.IsMouseButtonReleased(.RIGHT) {
-            RClickPos = rl.GetMousePosition()
-
-            // NOTE(ingar): Refactor right click logic
-            SonState.MouseState.RClicked = true
+        // NOTE(ingar): Add button to return to origin?
+        if rl.IsMouseButtonDown(.RIGHT) {
+            MouseDelta := rl.GetMouseDelta()
+            Camera.target -= MouseDelta
         }
 
+        // NOTE(ingar): Cap zoom?
+        Camera.zoom += rl.GetMouseWheelMove() * 0.15
+
+        if FrameCount % 144 == 0 {
+            fmt.println(
+                "Mouse world pos:",
+                MouseWorldPos,
+                "\nScreen world pos:",
+                CurrentScreenWorldPos,
+                "\n",
+            )
+        }
+
+        /*******************/
+        /*    RENDERING    */
+        /*******************/
+
+        WindowWidth := rl.GetScreenWidth()
+        WindowHeight := rl.GetScreenHeight()
+
+        rl.BeginDrawing()
+        rl.BeginMode2D(Camera)
+
+        rl.ClearBackground(rl.DARKGRAY)
         rl.DrawText("Hellope!", WINDOW_WIDTH / 2 - 50, WINDOW_HEIGHT / 2 - 50, 20, TextColor)
 
-        ToDelete := -1
+        TopMostNote := -1
         for &Note, i in SonState.NoteCollection.Notes[:SonState.NoteCollection.Count] {
-            RClickOnNote := rl.CheckCollisionPointRec(RClickPos, Note.Rect)
-            if RClickOnNote {
-                ToDelete = i
+            MouseIsOverNote := rl.CheckCollisionPointRec(MouseWorldPos, Note.Rect)
+            if MouseIsOverNote {
+                // TODO(ingar): Highlights all notes under mouse, not just top-most
+                Shadow := rl.Rectangle {
+                    Note.Rect.x + 5,
+                    Note.Rect.y + 5,
+                    Note.Rect.width + 5,
+                    Note.Rect.height + 5,
+                }
+                ShadowColor := rl.Color{0, 0, 0, 70}
+
+                rl.DrawRectangleRec(Shadow, ShadowColor)
+                rl.DrawRectangleRec(Note.Rect, Note.Color)
+                RenderTextField(&Note.TextField)
+
+                if rl.IsKeyPressed(.D) {
+                    TopMostNote = i
+                }
+            } else {
+                rl.DrawRectangleRec(Note.Rect, Note.Color)
+                RenderTextField(&Note.TextField)
             }
-            rl.DrawRectangleRec(Note.Rect, Note.Color)
-            RenderTextField(&Note.TextField)
         }
 
-        if ToDelete >= 0 {
-            RemoveNote(SonState.NoteCollection, u64(ToDelete))
-        }
+        // NOTE(ingar): Camera target target lines
+        rl.DrawLine(
+            i32(Camera.target.x),
+            -WindowHeight * 10,
+            i32(Camera.target.x),
+            WindowHeight * 10,
+            rl.GREEN,
+        )
+        rl.DrawLine(
+            -WindowWidth * 10,
+            i32(Camera.target.y),
+            WindowWidth * 10,
+            i32(Camera.target.y),
+            rl.GREEN,
+        )
 
+
+        rl.EndMode2D()
         rl.EndDrawing()
+
+        /**********************/
+        /*    EO RENDERING    */
+        /**********************/
+
+        if TopMostNote >= 0 {
+            RemoveNote(SonState.NoteCollection, u64(TopMostNote))
+            TopMostNote = -1
+        }
+
         free_all(context.temp_allocator)
+        FrameCount += 1
     }
 
     rl.CloseWindow()
