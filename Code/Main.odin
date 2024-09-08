@@ -17,26 +17,18 @@ import rl "vendor:raylib"
 WINDOW_WIDTH :: 960
 WINDOW_HEIGHT :: 540
 SON_NOTE_COUNT :: 1024
-
-text_field :: struct {
-    Rect:      rl.Rectangle,
-    TextColor: rl.Color,
-    Font:      rl.Font,
-    FontSize:  i32,
-    Text:      string,
-}
-
-// NOTE(ingar): I want to add shadows to indicate z-difference
+NOTE_TEXT_BUFFER_LEN :: 256
 note :: struct {
-    Rect:      rl.Rectangle,
-    Color:     rl.Color,
-    TextField: text_field,
-    Z:         i64,
-    // NOTE(ingar): If you create one note every second, it will take
-    // 292.27 billion years for this variable to overflow, so I think it's good
+    Rect:       rl.Rectangle,
+    RectColor:  rl.Color,
+    TextColor:  rl.Color,
+    Font:       rl.Font,
+    FontSize:   i32,
+    Text:       str.Builder,
+    TextBuffer: [NOTE_TEXT_BUFFER_LEN]u8,
+    // TODO(ingar): Find a better way to allocate the text buffer, ideally dynamically
 }
 
-// NOTE(ingar): This might be what will be refactored into the canvas later.
 note_collection :: struct {
     Size:           u64,
     Count:          u64,
@@ -46,26 +38,12 @@ note_collection :: struct {
     Notes:          []note,
 }
 
-AllocateNoteCollection :: proc(Size: u64, Allocator := context.allocator) -> ^note_collection {
-    Collection := new(note_collection, Allocator)
-    Collection.Size = Size
-    Collection.Notes = make([]note, Size, Allocator)
-
-    return Collection
-}
-
-RenderTextField :: proc(Field: ^text_field) {
-    CString := str.clone_to_cstring(Field.Text, context.temp_allocator)
-    DrawPos := rl.Vector2{f32(Field.Rect.x), f32(Field.Rect.y)}
-    rl.DrawTextEx(
-        Field.Font,
-        CString,
-        DrawPos,
-        f32(Field.FontSize),
-        /* 1 seems to be correct, but should be obs about this in the future */
-        1,
-        Field.TextColor,
-    )
+canvas :: struct {
+    Arena:          mem.Arena,
+    Allocator:      mem.Allocator,
+    Id:             int,
+    CollectionSize: u64,
+    NoteCollection: ^note_collection,
 }
 
 mouse_event :: struct {
@@ -81,11 +59,63 @@ mouse_state :: struct {
 }
 
 son_state :: struct {
-    Arena:          mem.Arena,
-    Initialized:    bool,
-    MouseState:     ^mouse_state,
-    NoteCollection: ^note_collection,
+    Initialized:  bool,
+    Allocator:    mem.Allocator,
+    MouseState:   ^mouse_state,
+    Canvases:     []^canvas,
+    ActiveCanvas: ^canvas,
 }
+
+CreateCanvas :: proc(NoteCount: u64, Id: int, Allocator := context.allocator) -> ^canvas {
+    CollectionSize := size_of(note_collection) + NoteCount * size_of(note)
+    CanvasMemSize := size_of(canvas) + CollectionSize
+    CanvasMemory, MemErr := make([]u8, CanvasMemSize)
+    CanvasArena: mem.Arena
+    mem.arena_init(&CanvasArena, CanvasMemory)
+    CanvasAllocator := mem.arena_allocator(&CanvasArena)
+
+    Canvas := new(canvas, CanvasAllocator)
+    NoteCollection := new(note_collection, CanvasAllocator)
+    Notes := make([]note, NoteCount, CanvasAllocator)
+    fmt.println(
+        "Canvas adr:",
+        rawptr(Canvas),
+        "\nNote collection adr:",
+        rawptr(NoteCollection),
+        "\nNotes adr:",
+        rawptr(&Notes[0]),
+        "\n",
+    )
+
+    NoteCollection.Size = NoteCount
+    NoteCollection.Notes = Notes
+
+    Canvas.Arena = CanvasArena
+    Canvas.Allocator = CanvasAllocator
+    Canvas.CollectionSize = CollectionSize
+    Canvas.NoteCollection = NoteCollection
+
+    return Canvas
+}
+
+// TODO(ingar): See rl example for wrapping text
+RenderNoteText :: proc(Note: ^note) {
+    // TODO(ingar): Submit bug report for to_string not working properly with byte-backed buffer
+    String := string(Note.TextBuffer[:len(Note.Text.buf)])
+    // TODO(ingar): Is it necessary to clone each time? to_cstring don't work
+    CString := str.clone_to_cstring(String, context.temp_allocator)
+    DrawPos := rl.Vector2{f32(Note.Rect.x + 5), f32(Note.Rect.y + 5)}
+    rl.DrawTextEx(
+        Note.Font,
+        CString,
+        DrawPos,
+        f32(Note.FontSize),
+        /* 1 seems to be correct, but should be obs about this in the future */
+        1,
+        Note.TextColor,
+    )
+}
+
 
 RemoveNote :: proc(Collection: ^note_collection, Idx: u64) {
     // NOTE(ingar): Error handling
@@ -99,56 +129,11 @@ RemoveNote :: proc(Collection: ^note_collection, Idx: u64) {
         Collection.Count -= 1
     }
 }
-// GlyphInfo{value = !, offsetX = 0, offsetY = 0, advanceX = 0, image = Image{data = 0xB6F850, width = 1, height = 10, mipmaps = 1, format = "UNCOMPRESSED_GRAY_ALPHA"}}
-WrapTextFieldString :: proc(Field: ^text_field) {
-    if len(Field.Text) == 0 {
-        return
-    }
 
-    FieldWidth := i32(Field.Rect.width)
-    FieldHeight := i32(Field.Rect.height)
-    RemainingWidth := FieldWidth
-
-    GlyphInfo := rl.GetGlyphInfo(Field.Font, rune(Field.Text[0]))
-    // NOTE(ingar): Does the image width take the spacing into account, and height line "aspacing"?
-
-    LinesAvailable := FieldHeight / GlyphInfo.image.height
-    RemainingLines := LinesAvailable
-    RemainingWidth -= GlyphInfo.image.width
-
-    fmt.println(Field.Font)
-    fmt.println(GlyphInfo)
-    fmt.println(LinesAvailable)
-
-    StringBuilder: str.Builder
-    str.builder_init(&StringBuilder)
-    defer str.builder_destroy(&StringBuilder)
-    str.write_rune(&StringBuilder, rune(Field.Text[0]))
-
-    for Rune in Field.Text[1:] {
-        if Rune == '\n' {
-            str.write_rune(&StringBuilder, Rune)
-            RemainingWidth = FieldWidth
-            RemainingLines -= 1
-            continue
-        }
-
-        GlyphInfo = rl.GetGlyphInfo(Field.Font, Rune)
-        GlyphWidth := GlyphInfo.image.width
-        RemainingWidth -= GlyphWidth
-        if RemainingWidth < 0 {
-            str.write_rune(&StringBuilder, '\n')
-            RemainingWidth = FieldWidth - GlyphWidth
-            RemainingLines -= 1
-        }
-
-        str.write_rune(&StringBuilder, Rune)
-    }
-
-    Field.Text = str.to_string(StringBuilder)
+WrapNoteText :: proc() {
 }
 
-AddNewNote :: proc(Collection: ^note_collection, Coord1, Coord2: rl.Vector2, Color: rl.Color) {
+AddNewNote :: proc(Canvas: ^canvas, Coord1, Coord2: rl.Vector2, Color: rl.Color) {
     if Coord1.x == Coord2.x || Coord1.y == Coord2.y {
         return // NOTE(ingar): Add error?
     }
@@ -161,36 +146,83 @@ AddNewNote :: proc(Collection: ^note_collection, Coord1, Coord2: rl.Vector2, Col
     Width := RightX - LeftX
     Height := BottomY - TopY
 
-    TextField := text_field{}
-    TextField.Rect = {LeftX + 5, TopY + 5, Width - 10, Height - 10}
-    TextField.Text = "Toodiloo!\nNewline baby!"
-    TextField.Font = rl.GetFontDefault()
-    TextField.FontSize = 12
-    TextField.TextColor = rl.BLACK
-    WrapTextFieldString(&TextField)
+    Note := note{}
+    Note.Rect = {LeftX, TopY, Width, Height}
+    Note.RectColor = Color
+    Note.Font = rl.GetFontDefault()
+    Note.FontSize = 12
+    Note.TextColor = rl.BLACK
+    // TODO(ingar): Find a way to store the text with the note for better locality
+    Note.Text = str.builder_from_bytes(Note.TextBuffer[:])
+    str.write_string(&Note.Text, "Toodiloo!\nNewline baby!")
 
-    NewNote := note{{LeftX, TopY, Width, Height}, Color, TextField, i64(Collection.Count)}
+    Collection := Canvas.NoteCollection
     if Collection.Count < Collection.Size {
-        Collection.Notes[Collection.Count] = NewNote
+        Collection.Notes[Collection.Count] = Note
         Collection.Count += 1
     }
 }
 
-ReadCanvasFromFile :: proc(FileName: string, Allocator: mem.Allocator) -> []u8 {
+LoadCanvasFromFile :: proc(Canvas: ^canvas) {
+    StringBuilder := str.builder_make(context.temp_allocator)
+    str.write_string(&StringBuilder, "./CanvasSaveFiles/Canvas")
+    str.write_int(&StringBuilder, Canvas.Id)
+    FileName := str.to_string(StringBuilder)
 
+    File, OpenError := os.open(FileName, os.O_RDONLY)
+    if OpenError != os.ERROR_NONE {
+        fmt.println("Error opening file!", OpenError)
+        return}
+    defer os.close(File)
+
+    FileInfo, StatError := os.fstat(File, context.temp_allocator)
+    if StatError != os.ERROR_NONE {
+        fmt.println("Error getting file info!", StatError)
+        return
+    }
+
+    fmt.println(
+        "Canvas adr:",
+        rawptr(Canvas),
+        "\nNote collection adr:",
+        rawptr(Canvas.NoteCollection),
+        "\nNotes adr:",
+        rawptr(&Canvas.NoteCollection.Notes[0]),
+        "\n",
+    )
+
+    Read, ReadError := os.read_ptr(File, Canvas.NoteCollection, int(FileInfo.size)) // int(Canvas.CollectionSize))
+    if ReadError != os.ERROR_NONE {
+        fmt.println("Error reading from file!", ReadError)
+        return
+    }
+
+    // TODO(ingar): This is probably a terrible way of doing this!
 }
 
-SaveCanvasToFile :: proc(SonState: ^son_state) {
-    File, OpenError := os.open("CanvasX", os.O_WRONLY | os.O_CREATE, 0o755)
+SaveCanvasToFile :: proc(Canvas: ^canvas) {
+    StringBuilder := str.builder_make(context.temp_allocator)
+    str.write_string(&StringBuilder, "./CanvasSaveFiles/Canvas")
+    str.write_int(&StringBuilder, Canvas.Id)
+    FileName := str.to_string(StringBuilder)
+
+    RWE_PERMISSION :: 0o755
+    File, OpenError := os.open(FileName, os.O_WRONLY | os.O_CREATE, RWE_PERMISSION)
     if OpenError != os.ERROR_NONE {
         fmt.println("Error opening file!", OpenError)
         return
     }
     defer os.close(File)
 
-    BytesWritten, WriteError := os.write(File, SonState.Arena.data[:SonState.Arena.offset])
+    BytesWritten, WriteError := os.write_ptr(
+        File,
+        Canvas.NoteCollection,
+        int(Canvas.CollectionSize),
+    )
     if WriteError != os.ERROR_NONE {
         fmt.println("Error writing to file!", WriteError)
+    } else {
+        fmt.println("Wrote", BytesWritten, "bytes to file")
     }
 }
 
@@ -210,14 +242,23 @@ main :: proc() {
 
     SonState := new(son_state)
     MouseState := new(mouse_state)
-    NoteCollection := AllocateNoteCollection(SON_NOTE_COUNT)
+    CANVAS_COUNT :: 1
+    CanvasSlice := make([]^canvas, CANVAS_COUNT)
 
-    SonState.Arena = SonArena
+    SonState.Allocator = SonAllocator
     SonState.MouseState = MouseState
-    SonState.NoteCollection = NoteCollection
+    SonState.Canvases = CanvasSlice
     SonState.Initialized = true
 
+    NOTE_COUNT :: 128
+    for i in 0 ..< len(SonState.Canvases) {
+        Canvas := CreateCanvas(NOTE_COUNT, i)
+        SonState.Canvases[i] = Canvas
+    }
+    SonState.ActiveCanvas = SonState.Canvases[0]
+
     TextColor := rl.BLACK
+    // NOTE(ingar): Used in debugging to get different color for notes. Will be removed in final version.
     Colors := []rl.Color {
         rl.LIGHTGRAY,
         rl.YELLOW,
@@ -238,6 +279,7 @@ main :: proc() {
         CurrentScreenWorldPos := rl.GetScreenToWorld2D(Camera.target, Camera)
         MouseScreenPos := rl.GetMousePosition()
         MouseWorldPos := rl.GetScreenToWorld2D(MouseScreenPos, Camera)
+        ActiveCanvas := SonState.ActiveCanvas
 
         if rl.IsMouseButtonPressed(.LEFT) {
             SonState.MouseState.LClicked = true
@@ -246,10 +288,9 @@ main :: proc() {
 
         if rl.IsMouseButtonReleased(.LEFT) {
             if SonState.MouseState.LClicked {
-
                 NoteColor := Colors[FrameCount % len(Colors)]
                 AddNewNote(
-                    SonState.NoteCollection,
+                    ActiveCanvas,
                     SonState.MouseState.PrevLClickPos,
                     MouseWorldPos,
                     NoteColor,
@@ -270,8 +311,11 @@ main :: proc() {
         }
 
         if rl.IsKeyDown(.LEFT_SHIFT) && rl.IsKeyPressed(.S) {
-            SaveCanvasToFile(SonState)
+            SaveCanvasToFile(ActiveCanvas)
         }
+
+        if rl.IsKeyDown(.LEFT_SHIFT) && rl.IsKeyPressed(.L) {
+            LoadCanvasFromFile(ActiveCanvas)}
 
         Camera.zoom += rl.GetMouseWheelMove() * 0.15 * Camera.zoom
         if Camera.zoom <= 0.05 {
@@ -305,7 +349,7 @@ main :: proc() {
         rl.DrawText("Hellope!", WINDOW_WIDTH / 2 - 50, WINDOW_HEIGHT / 2 - 50, 20, TextColor)
 
         TopMostNote := -1
-        for &Note, i in SonState.NoteCollection.Notes[:SonState.NoteCollection.Count] {
+        for &Note, i in ActiveCanvas.NoteCollection.Notes[:ActiveCanvas.NoteCollection.Count] {
             MouseIsOverNote := rl.CheckCollisionPointRec(MouseWorldPos, Note.Rect)
             if MouseIsOverNote {
                 // TODO(ingar): Highlights all notes under mouse, not just top-most
@@ -316,22 +360,22 @@ main :: proc() {
                     Note.Rect.width + 2 * OutlineWidth,
                     Note.Rect.height + 2 * OutlineWidth,
                 }
-                OutlineColor := Note.Color
+                OutlineColor := Note.RectColor
                 OutlineColor.a = 100
                 //OutlineWidth := 5 + Note.Rect.width / 50 + Note.Rect.height / 50
 
                 //rl.DrawRectangleRoundedLines(Outline, 0.05, 0, ShadowWidth, ShadowColor)
                 rl.DrawRectangleLinesEx(Outline, OutlineWidth, OutlineColor)
-                rl.DrawRectangleRec(Note.Rect, Note.Color)
-                RenderTextField(&Note.TextField)
+                rl.DrawRectangleRec(Note.Rect, Note.RectColor)
+                RenderNoteText(&Note)
 
                 // NOTE(ingar): Ensures only the top-most one is deleted if there are overlapping notes
                 if rl.IsKeyPressed(.D) {
                     TopMostNote = i
                 }
             } else {
-                rl.DrawRectangleRec(Note.Rect, Note.Color)
-                RenderTextField(&Note.TextField)
+                rl.DrawRectangleRec(Note.Rect, Note.RectColor)
+                RenderNoteText(&Note)
             }
         }
 
@@ -360,7 +404,7 @@ main :: proc() {
         /**********************/
 
         if TopMostNote >= 0 {
-            RemoveNote(SonState.NoteCollection, u64(TopMostNote))
+            RemoveNote(ActiveCanvas.NoteCollection, u64(TopMostNote))
             TopMostNote = -1
         }
 
