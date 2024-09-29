@@ -44,6 +44,7 @@ canvas :: struct {
     Id:             int,
     CollectionSize: u64,
     NoteCollection: ^note_collection,
+    Font:           rl.Font,
 }
 
 mouse_event :: struct {
@@ -94,18 +95,18 @@ CreateCanvas :: proc(NoteCount: u64, Id: int, Allocator := context.allocator) ->
     Canvas.Allocator = CanvasAllocator
     Canvas.CollectionSize = CollectionSize
     Canvas.NoteCollection = NoteCollection
+    Canvas.Font = rl.LoadFont("/home/ingarsa/.local/share/fonts/d/DroidSansMNFM.ttf")
 
     return Canvas
 }
 
-// static void DrawTextBoxedSelectable(Font font, const char *text, Rectangle rec, float fontSize, float spacing, bool wordWrap, Color tint, int selectStart, int selectLength, Color selectTint, Color selectBackTint)
-
+/*
+ * Based on the raylib example:
+ * https://github.com/raysan5/raylib/blob/master/examples/text/text_rectangle_bounds.c
+ */
 RenderNoteText :: proc(Note: ^note) {
-    // TODO(ingar): Submit bug report for to_string not working properly with byte-backed buffer
-    String := string(Note.TextBuffer[:len(Note.Text.buf)])
-
-    // TODO(ingar): Is it necessary to clone each time? to_cstring don't work
-    CString := str.clone_to_cstring(String, context.temp_allocator)
+    String := str.to_string(Note.Text)
+    CString := str.to_cstring(&Note.Text)
     CStringBytes := transmute([^]u8)CString
 
     WordWrap := true
@@ -114,7 +115,7 @@ RenderNoteText :: proc(Note: ^note) {
     TextOffsetY := f32(0)
     TextOffsetX := f32(0)
     ScaleFactor := f32(Note.FontSize / f32(Note.Font.baseSize))
-    Spacing := f32(2) // TODO(ingar): Make part of note struct
+    Spacing := f32(0.5) // TODO(ingar): Make part of note struct
 
     MeasureDrawState :: enum {
         Measure_State,
@@ -246,35 +247,31 @@ RemoveNote :: proc(Collection: ^note_collection, Idx: u64) {
     }
 }
 
-WrapNoteText :: proc() {
-}
-
 AddNewNote :: proc(Canvas: ^canvas, Coord1, Coord2: rl.Vector2, Color: rl.Color) {
     if Coord1.x == Coord2.x || Coord1.y == Coord2.y {
         return // NOTE(ingar): Add error?
     }
 
-    LeftX := Coord1.x if Coord1.x < Coord2.x else Coord2.x
-    RightX := Coord1.x if Coord1.x > Coord2.x else Coord2.x
-    TopY := Coord1.y if Coord1.y < Coord2.y else Coord2.y
-    BottomY := Coord1.y if Coord1.y > Coord2.y else Coord2.y
-
-    Width := RightX - LeftX
-    Height := BottomY - TopY
-
-    Note := note{}
-    Note.Rect = {LeftX, TopY, Width, Height}
-    Note.RectColor = Color
-    Note.Font = rl.GetFontDefault()
-    Note.FontSize = 12
-    Note.TextColor = rl.BLACK
-    // TODO(ingar): Find a way to store the text with the note for better locality
-    Note.Text = str.builder_from_bytes(Note.TextBuffer[:])
-    str.write_string(&Note.Text, "Toodiloo!\nNewline baby!")
-
     Collection := Canvas.NoteCollection
     if Collection.Count < Collection.Size {
-        Collection.Notes[Collection.Count] = Note
+        LeftX := Coord1.x if Coord1.x < Coord2.x else Coord2.x
+        RightX := Coord1.x if Coord1.x > Coord2.x else Coord2.x
+        TopY := Coord1.y if Coord1.y < Coord2.y else Coord2.y
+        BottomY := Coord1.y if Coord1.y > Coord2.y else Coord2.y
+
+        Width := RightX - LeftX
+        Height := BottomY - TopY
+
+        Note := &Collection.Notes[Collection.Count]
+
+        Note.Rect = {LeftX, TopY, Width, Height}
+        Note.RectColor = Color
+        Note.Font = Canvas.Font
+        Note.FontSize = 32
+        Note.TextColor = rl.BLACK
+        Note.Text = str.builder_from_bytes(Note.TextBuffer[:])
+        str.write_string(&Note.Text, "Toodiloo!\nNewline baby!")
+
         Collection.Count += 1
     }
 }
@@ -344,7 +341,7 @@ SaveCanvasToFile :: proc(Canvas: ^canvas) {
 
 main :: proc() {
     rl.InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "StickO-Note")
-    rl.SetTargetFPS(144)
+    rl.SetTargetFPS(420)
     rl.SetWindowMonitor(0)
     WindowConfig := rl.ConfigFlags{.WINDOW_RESIZABLE}
     rl.SetWindowState(WindowConfig)
@@ -511,6 +508,10 @@ main :: proc() {
             rl.GREEN,
         )
 
+        rl.DrawFPS(
+            i32(Camera.target.x - WINDOW_WIDTH / 2 + 10),
+            i32(Camera.target.y - WINDOW_HEIGHT / 2 + 10),
+        )
 
         rl.EndMode2D()
         rl.EndDrawing()
