@@ -23,7 +23,7 @@ note :: struct {
     RectColor:  rl.Color,
     TextColor:  rl.Color,
     Font:       rl.Font,
-    FontSize:   i32,
+    FontSize:   f32,
     Text:       str.Builder,
     TextBuffer: [NOTE_TEXT_BUFFER_LEN]u8,
     // TODO(ingar): Find a better way to allocate the text buffer, ideally dynamically
@@ -98,24 +98,140 @@ CreateCanvas :: proc(NoteCount: u64, Id: int, Allocator := context.allocator) ->
     return Canvas
 }
 
-// TODO(ingar): See rl example for wrapping text
+// static void DrawTextBoxedSelectable(Font font, const char *text, Rectangle rec, float fontSize, float spacing, bool wordWrap, Color tint, int selectStart, int selectLength, Color selectTint, Color selectBackTint)
+
 RenderNoteText :: proc(Note: ^note) {
     // TODO(ingar): Submit bug report for to_string not working properly with byte-backed buffer
     String := string(Note.TextBuffer[:len(Note.Text.buf)])
+
     // TODO(ingar): Is it necessary to clone each time? to_cstring don't work
     CString := str.clone_to_cstring(String, context.temp_allocator)
-    DrawPos := rl.Vector2{f32(Note.Rect.x + 5), f32(Note.Rect.y + 5)}
-    rl.DrawTextEx(
-        Note.Font,
-        CString,
-        DrawPos,
-        f32(Note.FontSize),
-        /* 1 seems to be correct, but should be obs about this in the future */
-        1,
-        Note.TextColor,
-    )
-}
+    CStringBytes := transmute([^]u8)CString
 
+    WordWrap := true
+    DrawPos := rl.Vector2{f32(Note.Rect.x + 5), f32(Note.Rect.y + 5)}
+    TextLength := i32(rl.TextLength(CString))
+    TextOffsetY := f32(0)
+    TextOffsetX := f32(0)
+    ScaleFactor := f32(Note.FontSize / f32(Note.Font.baseSize))
+    Spacing := f32(2) // TODO(ingar): Make part of note struct
+
+    MeasureDrawState :: enum {
+        Measure_State,
+        Draw_State,
+    }
+    State := MeasureDrawState.Measure_State if WordWrap else MeasureDrawState.Draw_State
+
+    StartLine, EndLine, LastK: i32 = -1, -1, -1
+    i, k: i32 = 0, 0
+    for i < TextLength {
+        CodepointByteCount := i32(0)
+        Codepoint := rl.GetCodepoint(cstring(&CStringBytes[i]), &CodepointByteCount)
+        Index := rl.GetGlyphIndex(Note.Font, Codepoint)
+
+        if Codepoint == 0x3f {
+            CodepointByteCount = 1
+        }
+        i += CodepointByteCount - 1
+
+        GlyphWidth := f32(0)
+        if Codepoint != '\n' {
+            GlyphWidth =
+                (Note.Font.glyphs[Index].advanceX == 0) \
+                ? Note.Font.recs[Index].width * ScaleFactor \
+                : f32(Note.Font.glyphs[Index].advanceX) * ScaleFactor
+            if i + 1 < TextLength {
+                GlyphWidth += Spacing
+            }
+        }
+
+        switch State {
+        case .Measure_State:
+            if Codepoint == ' ' || Codepoint == '\t' || Codepoint == '\n' {
+                EndLine = i
+            }
+
+            if TextOffsetX + GlyphWidth > Note.Rect.width - 10 {
+                EndLine = (EndLine < 1) ? i : EndLine
+                if i == EndLine {
+                    EndLine -= CodepointByteCount
+                }
+                if StartLine + CodepointByteCount == EndLine {
+                    EndLine = i - CodepointByteCount
+                }
+
+                State = .Draw_State
+            } else if i + 1 == TextLength {
+                EndLine = i
+                State = .Draw_State
+            } else if Codepoint == '\n' {
+                State = .Draw_State
+            }
+
+            if State == .Draw_State {
+                TextOffsetX = 0
+                i = StartLine
+                GlyphWidth = 0
+
+                Temp := LastK
+                LastK = k - 1
+                k = Temp
+            }
+        case .Draw_State:
+            if Codepoint == '\n' {
+                if !WordWrap {
+                    TextOffsetY += f32(Note.Font.baseSize + Note.Font.baseSize / 2) * ScaleFactor
+                    TextOffsetX = 0
+                }
+            } else {
+                if !WordWrap && TextOffsetX + GlyphWidth > Note.Rect.width - 10 {
+                    TextOffsetY += f32(Note.Font.baseSize + Note.Font.baseSize / 2) * ScaleFactor
+                    TextOffsetX = 0
+                }
+
+                // NOTE(ingar): Stop drawing if text goes out of bounds
+                if TextOffsetY + f32(Note.Font.baseSize) * ScaleFactor > Note.Rect.height - 10 {
+                    break
+                }
+
+                // TODO(ingar): Add drawing of text selection
+                IsGlyphSelected := false
+
+                DrawX := DrawPos.x + TextOffsetX
+                DrawY := DrawPos.y + TextOffsetY
+                if Codepoint != ' ' && Codepoint != '\t' {
+                    rl.DrawTextCodepoint(
+                        Note.Font,
+                        Codepoint,
+                        rl.Vector2({DrawX, DrawY}),
+                        Note.FontSize,
+                        Note.TextColor,
+                    )
+                }
+            }
+
+            if WordWrap && i == EndLine {
+                // TODO(ingar): Since baseSize is i32, the scaling might be off due to the integer division
+                TextOffsetY += f32(Note.Font.baseSize + Note.Font.baseSize / 2) * ScaleFactor
+                TextOffsetX = 0
+                StartLine = EndLine
+                EndLine = -1
+                GlyphWidth = 0
+                //SelectStart += LastK - k
+                k = LastK
+                State = .Measure_State
+
+            }
+        }
+
+        if TextOffsetX != 0 || Codepoint != ' ' {
+            TextOffsetX += GlyphWidth
+        }
+
+        i += 1
+        k += 1
+    }
+}
 
 RemoveNote :: proc(Collection: ^note_collection, Idx: u64) {
     // NOTE(ingar): Error handling
