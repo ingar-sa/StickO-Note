@@ -5,6 +5,6 @@ ORIGINAL_DIR=$(pwd)
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$DIR"
-odin "$1" Code/ -out:Build/StickONote -o:none -debug -show-timings
+odin run Code/ -out:Build/StickONote -o:none -debug -show-timings
 
 cd "$ORIGINAL_DIR"
