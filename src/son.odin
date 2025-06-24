@@ -238,85 +238,53 @@ AddNote :: proc(
     Color := rl.YELLOW,
     FontColor := rl.BLACK,
     FontSize := f32(18),
+    Text := "",
     Allocator := context.allocator,
 ) 
 {
     Rec := rl.Rectangle{Pos.x - NOTE_MIN_DIM.x / 2, Pos.y - 10, NOTE_MIN_DIM.x, NOTE_MIN_DIM.y}
     Note := note{Rec, Color, FontColor, FontSize, {}}
     str.builder_init(&Note.Text, Allocator)
+    str.write_string(&Note.Text, Text)
     append(&Canvas.Notes, Note)
 }
 
-ResizeRecFromCorner :: proc(Rec: ^rl.Rectangle, Corner: corner, Delta: rl.Vector2) 
+ResizedRecFromCorner :: proc(Rec: rl.Rectangle, Corner: corner, Delta: rl.Vector2) -> rl.Rectangle 
 {
-    NewX := Rec.x
-    NewY := Rec.y
-    NewWidth := Rec.width
-    NewHeight := Rec.height
-
+    Rec := Rec
     switch Corner 
     {
     case .TL:
-        if NewWidth + -Delta.x < NOTE_MIN_DIM.x 
-        {
-            NewX += NewWidth - NOTE_MIN_DIM.x
-        }
-         else 
-        {
-            NewX += Delta.x
-        }
-        if NewHeight + -Delta.y < NOTE_MIN_DIM.y 
-        {
-            NewY += NewHeight - NOTE_MIN_DIM.y
-        }
-         else 
-        {
-            NewY += Delta.y
-        }
-        NewHeight = max(NewHeight + -Delta.y, NOTE_MIN_DIM.y)
-        NewWidth = max(NewWidth + -Delta.x, NOTE_MIN_DIM.x)
+        Rec.x += Rec.width + -Delta.x < NOTE_MIN_DIM.x ? Rec.width - NOTE_MIN_DIM.x : Delta.x
+        Rec.y += Rec.height + -Delta.y < NOTE_MIN_DIM.y ? Rec.height - NOTE_MIN_DIM.y : Delta.y
+        Rec.height = max(Rec.height + -Delta.y, NOTE_MIN_DIM.y)
+        Rec.width = max(Rec.width + -Delta.x, NOTE_MIN_DIM.x)
     case .TR:
-        if NewHeight + -Delta.y < NOTE_MIN_DIM.y 
-        {
-            NewY += NewHeight - NOTE_MIN_DIM.y
-        }
-         else 
-        {
-            NewY += Delta.y
-        }
-        NewHeight = max(NewHeight + -Delta.y, NOTE_MIN_DIM.y)
-        NewWidth = max(NewWidth + Delta.x, NOTE_MIN_DIM.x)
+        Rec.y += Rec.height + -Delta.y < NOTE_MIN_DIM.y ? Rec.height - NOTE_MIN_DIM.y : Delta.y
+        Rec.height = max(Rec.height + -Delta.y, NOTE_MIN_DIM.y)
+        Rec.width = max(Rec.width + Delta.x, NOTE_MIN_DIM.x)
     case .BL:
-        if NewWidth + -Delta.x < NOTE_MIN_DIM.x 
-        {
-            NewX += NewWidth - NOTE_MIN_DIM.x
-        }
-         else 
-        {
-            NewX += Delta.x
-        }
-        NewHeight = max(NewHeight + Delta.y, NOTE_MIN_DIM.y)
-        NewWidth = max(NewWidth + -Delta.x, NOTE_MIN_DIM.x)
+        Rec.x += Rec.width + -Delta.x < NOTE_MIN_DIM.x ? Rec.width - NOTE_MIN_DIM.x : Delta.x
+        Rec.height = max(Rec.height + Delta.y, NOTE_MIN_DIM.y)
+        Rec.width = max(Rec.width + -Delta.x, NOTE_MIN_DIM.x)
     case .BR:
-        NewWidth = max(Rec.width + Delta.x, NOTE_MIN_DIM.x)
-        NewHeight = max(Rec.height + Delta.y, NOTE_MIN_DIM.y)
+        Rec.width = max(Rec.width + Delta.x, NOTE_MIN_DIM.x)
+        Rec.height = max(Rec.height + Delta.y, NOTE_MIN_DIM.y)
     }
 
-    Rec^ = {NewX, NewY, NewWidth, NewHeight}
+    return Rec
 }
 
 SetNoteText :: proc(Note: ^note, Text: string) 
 {
     str.builder_reset(&Note.Text)
     str.write_string(&Note.Text, Text)
-    fmt.println("New string:", str.to_string(Note.Text))
 }
 
 AddRuneToText :: proc(Text: ^str.Builder, Rune: rune) 
 {
     if Rune != 0 
     {
-        fmt.printfln("Writing rune %v to text", Rune)
         str.write_rune(Text, Rune)
     }
 }
@@ -526,7 +494,7 @@ SaveCanvas :: proc(
         os.write_string(Handle, Text) or_return
     }
 
-    fmt.printfln("Successfully saved canvas %v to %v", Canvas.Name, SavefileName)
+    fmt.printfln("Successfully saved canvas \"%v\" to \"%v\"", Canvas.Name, SavefileName)
     return os.ERROR_NONE
 }
 
@@ -578,9 +546,13 @@ LoadCanvas :: proc(
 
         str.builder_init_none(&Note.Text, CanvasAllocator)
         str.write_string(&Note.Text, Text)
-        fmt.println("Note text in load:", str.to_string(Note.Text))
     }
 
+    fmt.printfln(
+        "Successfully loaded canvas \"%v\" from \"%v\"",
+        Canvas.Name,
+        str.to_string(FilenameB),
+    )
     return Canvas, os.ERROR_NONE
 }
 
@@ -620,26 +592,26 @@ main :: proc()
     Camera.zoom = 1
 
     FontColor := rl.BLACK
-    Son.Canvas = NewCanvas("Testing", "/home/ingarsa/.local/share/fonts/d/DroidSansMNFM.ttf")
+    Canvas, LoadErr := LoadCanvas("Testing")
+    if LoadErr != os.ERROR_NONE 
+    {
+        if LoadErr == os.ENOENT 
+        {
+            Canvas = NewCanvas("Testing", "/home/ingarsa/.local/share/fonts/d/DroidSansMNFM.ttf")
+            AddNote(Canvas, {256, 128}, Text = "Hellope!")
+            AddNote(
+                Canvas,
+                {768, 128},
+                Text = "Failed to load canvas Testing from file!\nIt did not exist",
+            )
+        }
+         else 
+        {
+            fmt.eprintfln("Failed to load canvas Testing (error %v)", LoadErr)
+        }
+    }
 
-    Len := len(Son.Canvas.Notes)
-    fmt.println("Type of len:", typeid_of(type_of(Len)))
-    fmt.println("Size of [dynamic]note:", size_of(Son.Canvas.Notes))
-    fmt.println("Size of note:", size_of(note))
-    fmt.println("Size of canvas:", size_of(Son.Canvas))
-    fmt.println("Size of keyboard state:", size_of(Son.Keyboard.Keys))
-
-    AddNote(Son.Canvas, {256, 128})
-    AddNote(Son.Canvas, {768, 128})
-    SetNoteText(&Son.Canvas.Notes[len(Son.Canvas.Notes) - 1], "New text!\nNewline")
-    SetNoteText(
-        &Son.Canvas.Notes[len(Son.Canvas.Notes) - 2],
-        "New text!\nNewline asdfaiodsfjoiasjdfjasoidfjasd",
-    )
-    fmt.println("Size of Note:", size_of(Son.Canvas.Notes[len(Son.Canvas.Notes) - 2]))
-    fmt.println("Size of note text:", size_of(Son.Canvas.Notes[len(Son.Canvas.Notes) - 2].Text))
-
-    Canvas := Son.Canvas
+    Son.Canvas = Canvas
     Mouse := &Son.Mouse
     Keyboard := &Son.Keyboard
     Keys := &Keyboard.Keys
@@ -648,11 +620,6 @@ main :: proc()
         rl.BeginDrawing()
         rl.BeginMode2D(Camera)
         rl.ClearBackground(rl.DARKGRAY)
-
-        defer rl.EndMode2D()
-        defer rl.EndDrawing()
-        defer free_all(context.temp_allocator)
-        defer Son.FrameCount += 1
 
         WindowWidth := rl.GetScreenWidth()
         WindowHeight := rl.GetScreenHeight()
@@ -665,17 +632,18 @@ main :: proc()
 
         GetRlMouseButtonState(&Mouse.L, .LEFT)
         GetRlMouseButtonState(&Mouse.R, .RIGHT)
-
         if Mouse.L.FrameClicked != 0 &&
            (Son.FrameCount - Mouse.L.FrameClicked) >= RESET_CLICKED_FRAME_COUNT 
         {
             ResetMouseButtonClicked(&Mouse.L)
         }
+
         if Mouse.R.FrameClicked != 0 &&
            (Son.FrameCount - Mouse.R.FrameClicked) >= RESET_CLICKED_FRAME_COUNT 
         {
             ResetMouseButtonClicked(&Mouse.R)
         }
+
         UpdateMouseButtonClicked(&Mouse.L)
         UpdateMouseButtonClicked(&Mouse.R)
 
@@ -718,7 +686,7 @@ main :: proc()
         {
             if SaveErr := SaveCanvas(Son.Canvas); SaveErr != os.ERROR_NONE 
             {
-                fmt.eprintfln("Failed to save canvas %v (error %v)", Son.Canvas.Name, SaveErr)
+                fmt.eprintfln("Failed to save canvas \"%v\" (error %v)", Son.Canvas.Name, SaveErr)
                 return
             }
         }
@@ -734,7 +702,7 @@ main :: proc()
             }
              else 
             {
-                fmt.eprintfln("Failed to load canvas %v (error %v)", Son.Canvas.Name, LoadErr)
+                fmt.eprintfln("Failed to load canvas \"%v\" (error %v)", Son.Canvas.Name, LoadErr)
                 return
             }
         }
@@ -807,13 +775,14 @@ main :: proc()
                     break
                 }
 
-                ResizeRecFromCorner(Rec, Canvas.ResizingCorner, ScaledMDelta)
+                Rec^ = ResizedRecFromCorner(Rec^, Canvas.ResizingCorner, ScaledMDelta)
 
             case .Idle:
             }
         }
          else if Canvas.HotNoteIdx >= 0 
         {
+            // TODO: (isa): Bug when you double click on note!
             if Mouse.L.DoubleClicked 
             {
                 SetActiveNote(Canvas, Canvas.HotNoteIdx)
@@ -878,5 +847,9 @@ main :: proc()
             }
         }
 
+        rl.EndMode2D()
+        rl.EndDrawing()
+        free_all(context.temp_allocator)
+        Son.FrameCount += 1
     }
 }
