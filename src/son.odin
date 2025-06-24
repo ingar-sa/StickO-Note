@@ -46,6 +46,9 @@ note_mode :: enum
     Typing,
 }
 
+/*
+ * Pinned state where it won't resize or move
+*/
 note :: struct 
 {
     Rec:       rl.Rectangle,
@@ -55,6 +58,9 @@ note :: struct
     Text:      str.Builder, // TODO: (isa): Store separately to make search and stuff easier?
 }
 
+/*
+ * Undo note movement and resizing
+ */
 canvas :: struct 
 {
     Name:           string,
@@ -162,15 +168,6 @@ DeleteCanvas :: proc(Canvas: ^canvas)
     free(Canvas)
 }
 
-NewSonState :: proc(Canvas: ^canvas = nil, Allocator := context.allocator) -> ^son_state 
-{
-    Son := new(son_state, Allocator)
-    Son.FrameCount = 1
-    Son.Canvas = Canvas
-    Son.Initialized = true
-    return Son
-}
-
 UpdateMouseButtonClicked :: proc(Button: ^mouse_button_state) 
 {
     Button.DoubleClicked = Button.DoubleClicked || (Button.Clicked && Button.Pressed)
@@ -202,14 +199,11 @@ GetRlKeyboardKeyState :: proc(State: ^key_state, Key: rl.KeyboardKey)
     State.Up = rl.IsKeyUp(Key)
 }
 
-UnsetActiveNoteIfTrue :: proc(Canvas: ^canvas, Condition: bool) 
+UnsetActiveNote :: proc(Canvas: ^canvas) 
 {
-    if Condition 
-    {
-        Canvas.ActiveNoteIdx = -1
-        Canvas.ActiveNote = nil
-        Canvas.ActiveNoteMode = .Idle
-    }
+    Canvas.ActiveNoteIdx = -1
+    Canvas.ActiveNote = nil
+    Canvas.ActiveNoteMode = .Idle
 }
 
 SetActiveNote :: proc(Canvas: ^canvas, Idx: int) 
@@ -426,24 +420,6 @@ RlRecAdd :: proc(Rec1: rl.Rectangle, Addend: [4]f32) -> rl.Rectangle
     return NewRec
 }
 
-NoteSize :: proc(Note: note) -> int 
-{
-    Size :=
-        size_of(Note.Rec) +
-        size_of(Note.RecColor) +
-        size_of(Note.FontColor) +
-        size_of(Note.FontSize) +
-        len(str.to_string(Note.Text))
-    return Size
-}
-
-CanvasSize :: proc(Canvas: canvas) -> int 
-{
-    Size := size_of(Canvas)
-    Size += len(Canvas.Name)
-    return Size
-}
-
 IncrementOffsetsByTypeVal :: proc(From, To: ^int, $F: typeid, TInc: int) 
 {
     From^ += size_of(F)
@@ -474,6 +450,20 @@ IncrementOffsets :: proc
     IncrementOffsetsByValType,
     IncrementOffsetsByVal,
     IncrementOffsetsByType,
+}
+
+SliceToTypeOffset :: proc(Buf: []byte, $T: typeid, Off: ^int) -> T 
+{
+    Val := slice.to_type(Buf[Off^:], T)
+    Off^ += size_of(T)
+    return Val
+}
+
+SliceToStringOffset :: proc(Buf: []byte, StringLen: int, Off: ^int) -> string 
+{
+    String := string(Buf[Off^:Off^ + StringLen])
+    Off^ += StringLen
+    return String
 }
 
 DEFAULT_SAVE_DIR :: "saves/"
@@ -540,7 +530,6 @@ SaveCanvas :: proc(
     return os.ERROR_NONE
 }
 
-
 LoadCanvas :: proc(
     CanvasName: string,
     DirectoryName := DEFAULT_SAVE_DIR,
@@ -567,54 +556,34 @@ LoadCanvas :: proc(
     ) or_return
 
     Off: int
-    TextSize := slice.to_type(Bytes[Off:], int)
-
-    Off += size_of(int)
-    Name := string(Bytes[Off:Off + TextSize])
-
-    Off += TextSize
-    TextSize = slice.to_type(Bytes[Off:], int)
-
-    Off += size_of(int)
-    FontFilename := string(Bytes[Off:Off + TextSize])
-
-    Off += TextSize
-    NoteCount := slice.to_type(Bytes[Off:], int)
-
+    TextSize := SliceToTypeOffset(Bytes, int, &Off)
+    Name := SliceToStringOffset(Bytes, TextSize, &Off)
+    TextSize = SliceToTypeOffset(Bytes, int, &Off)
+    FontFilename := SliceToStringOffset(Bytes, TextSize, &Off)
+    NoteCount := SliceToTypeOffset(Bytes, int, &Off)
     Canvas = NewCanvas(Name, FontFilename, CanvasAllocator)
-    Off += size_of(int)
 
     for i in 0 ..< NoteCount 
     {
         append(&Canvas.Notes, note{})
         Note := &Canvas.Notes[i]
 
-        Note.Rec = slice.to_type(Bytes[Off:], type_of(Note.Rec))
+        Note.Rec = SliceToTypeOffset(Bytes, type_of(Note.Rec), &Off)
+        Note.RecColor = SliceToTypeOffset(Bytes, type_of(Note.RecColor), &Off)
+        Note.FontColor = SliceToTypeOffset(Bytes, type_of(Note.FontColor), &Off)
+        Note.FontSize = SliceToTypeOffset(Bytes, type_of(Note.FontSize), &Off)
 
-        Off += size_of(Note.Rec)
-        Note.RecColor = slice.to_type(Bytes[Off:], type_of(Note.RecColor))
-
-        Off += size_of(Note.RecColor)
-        Note.FontColor = slice.to_type(Bytes[Off:], type_of(Note.FontColor))
-
-        Off += size_of(Note.FontColor)
-        Note.FontSize = slice.to_type(Bytes[Off:], type_of(Note.FontSize))
-
-        Off += size_of(Note.FontSize)
-        TextSize = slice.to_type(Bytes[Off:], int)
-
-        Off += size_of(int)
-        Text := string(Bytes[Off:Off + TextSize])
+        TextSize = SliceToTypeOffset(Bytes, int, &Off)
+        Text := SliceToStringOffset(Bytes, TextSize, &Off)
 
         str.builder_init_none(&Note.Text, CanvasAllocator)
         str.write_string(&Note.Text, Text)
         fmt.println("Note text in load:", str.to_string(Note.Text))
-
-        Off += TextSize
     }
 
     return Canvas, os.ERROR_NONE
 }
+
 
 TrackingAllocatorFini :: proc(Track: ^mem.Tracking_Allocator) 
 {
@@ -679,6 +648,11 @@ main :: proc()
         rl.BeginDrawing()
         rl.BeginMode2D(Camera)
         rl.ClearBackground(rl.DARKGRAY)
+
+        defer rl.EndMode2D()
+        defer rl.EndDrawing()
+        defer free_all(context.temp_allocator)
+        defer Son.FrameCount += 1
 
         WindowWidth := rl.GetScreenWidth()
         WindowHeight := rl.GetScreenHeight()
@@ -788,8 +762,9 @@ main :: proc()
             ActiveNoteMode := Canvas.ActiveNoteMode
             Rec := &Canvas.ActiveNote.Rec
 
-            if ActiveNoteMode == .Typing 
+            switch ActiveNoteMode 
             {
+            case .Typing:
                 // TODO: (isa): 
                 //              Ctrl+[Z, Backspace]
                 //              Wrapping text
@@ -797,34 +772,44 @@ main :: proc()
                 //              Cursor
                 //              Moving cursor in text
                 ExitedTyping := Mouse.L.Pressed && Canvas.HotNoteIdx < 0 || Keys[.Escape].Pressed
-                UnsetActiveNoteIfTrue(Canvas, ExitedTyping)
-
-                if !ExitedTyping 
+                if ExitedTyping 
                 {
-                    // TODO: (isa): Having this framerate dependent is probably not a good idea lol
-                    if Keys[.Backspace].Pressed ||
-                       Keys[.Backspace].Down && Son.FrameCount % 3 == 0 
-                    {
-                        BackspaceText(&ActiveNote.Text, 1)
-                    }
-                     else 
-                    {
-                        Rune := Keyboard.CharPressed
-                        Rune = Keys[.Enter].Pressed ? '\n' : Rune
-                        AddRuneToText(&ActiveNote.Text, Rune)
-                    }
+                    UnsetActiveNote(Canvas)
+                    break
                 }
-            }
-             else if Canvas.ActiveNoteMode == .Moving 
-            {
-                UnsetActiveNoteIfTrue(Canvas, Mouse.L.Released)
+
+                // TODO: (isa): Having this framerate dependent is probably not a good idea lol
+                if Keys[.Backspace].Pressed || Keys[.Backspace].Down && Son.FrameCount % 3 == 0 
+                {
+                    BackspaceText(&ActiveNote.Text, 1)
+                }
+                 else 
+                {
+                    Rune := Keyboard.CharPressed
+                    Rune = Keys[.Enter].Pressed ? '\n' : Rune
+                    AddRuneToText(&ActiveNote.Text, Rune)
+                }
+
+            case .Moving:
+                if Mouse.L.Released 
+                {
+                    UnsetActiveNote(Canvas)
+                    break
+                }
+
                 Rec.x += ScaledMDelta.x
                 Rec.y += ScaledMDelta.y
-            }
-             else if Canvas.ActiveNoteMode == .Resizing 
-            {
-                UnsetActiveNoteIfTrue(Canvas, Mouse.L.Released)
+
+            case .Resizing:
+                if Mouse.L.Released 
+                {
+                    UnsetActiveNote(Canvas)
+                    break
+                }
+
                 ResizeRecFromCorner(Rec, Canvas.ResizingCorner, ScaledMDelta)
+
+            case .Idle:
             }
         }
          else if Canvas.HotNoteIdx >= 0 
@@ -835,30 +820,25 @@ main :: proc()
                 Canvas.ActiveNoteMode = .Typing
                 ResetMouseButtonClicked(&Mouse.L)
             }
-             else if Mouse.L.Down && Keys[.Left_Control].Down 
+             else if Mouse.L.Down 
             {
-                // TODO: (isa): You have to press the mouse button and then control for this to work,
-                // so that needs to be fixed so you can do it in any order
                 SetActiveNote(Canvas, Canvas.HotNoteIdx)
                 OldActiveNote = Canvas.Notes[Canvas.ActiveNoteIdx]
 
                 if MouseOverCorner 
                 {
-                    //fmt.printfln("Resizing note from corner: %v", CornerMouseOver)
                     Canvas.ActiveNoteMode = .Resizing
                     Canvas.ResizingCorner = CornerMouseOver
                 }
                  else 
                 {
-                    //fmt.println("Moving note")
                     Canvas.ActiveNoteMode = .Moving
                 }
             }
              else if Keyboard.KeyPressed == .D && Keys[.Left_Shift].Down 
             {
                 unordered_remove(&Canvas.Notes, Canvas.HotNoteIdx)
-                Canvas.HotNoteIdx = -1
-                Canvas.HotNote = nil
+                UnsetHotNote(Canvas)
             }
         }
 
@@ -867,11 +847,6 @@ main :: proc()
             rl.DrawRectangleRec(Note.Rec, Note.RecColor)
             if Text, AllocOk := str.to_cstring(&Note.Text); AllocOk == .None 
             {
-                if Son.FrameCount % FPS == 0 
-                {
-                    fmt.println("Note text in rendering:", str.to_string(Note.Text))
-                    fmt.println("Note text in rendering cstring:", Text)
-                }
                 Pos := rl.Vector2{Note.Rec.x + NOTE_TEXT_OFFSET, Note.Rec.y + NOTE_TEXT_OFFSET}
                 rl.DrawTextPro(Canvas.Font, Text, Pos, {}, 0, Note.FontSize, 0, Note.FontColor)
             }
@@ -891,11 +866,9 @@ main :: proc()
                         {RecOffset, RecOffset, -2 * RecOffset, -2 * RecOffset},
                     )
                     rl.DrawRectangleLinesEx(TextRec, 1, rl.BLACK)
-                    //fmt.println("Drawing text outline")
                 }
             }
-
-            if i == Canvas.HotNoteIdx 
+             else if i == Canvas.HotNoteIdx 
             {
                 DrawNoteOutline(Note)
                 if MouseOverCorner 
@@ -905,9 +878,5 @@ main :: proc()
             }
         }
 
-        rl.EndMode2D()
-        rl.EndDrawing()
-        free_all(context.temp_allocator)
-        Son.FrameCount += 1
     }
 }
