@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:mem"
 import "core:mem/virtual"
 import "core:os"
+import "core:slice"
 import str "core:strings"
 
 import b2 "vendor:box2d"
@@ -18,6 +19,16 @@ NOTE_TEXT_OFFSET :: 5
 RESET_CLICKED_FRAME_COUNT :: FPS * 0.5
 NOTE_MIN_DIM :: [2]f32{256, 256}
 CORNER_CHECK_DIMS :: [2]f32{30, 30}
+
+NoteColors := []rl.Color {
+    rl.LIGHTGRAY,
+    rl.YELLOW,
+    rl.PINK,
+    rl.VIOLET,
+    rl.MAROON,
+    rl.BEIGE,
+    rl.MAGENTA,
+}
 
 corner :: enum 
 {
@@ -46,6 +57,8 @@ note :: struct
 
 canvas :: struct 
 {
+    Name:           string,
+    FontFilename:   string,
     Font:           rl.Font,
     HotNoteIdx:     int,
     HotNote:        ^note,
@@ -102,13 +115,61 @@ son_state :: struct
 {
     Initialized: bool,
     FrameCount:  uint,
-    Canvas:      canvas,
+    Canvas:      ^canvas,
     Mouse:       mouse_state,
     Keyboard:    keyboard_state,
 }
 
 Son: son_state
 
+NewNote :: proc(
+    Rec := rl.Rectangle{},
+    RecColor := rl.YELLOW,
+    FontColor := rl.BLACK,
+    FontSize := f32(18),
+    Allocator := context.allocator,
+) -> note 
+{
+    Note := note{Rec, RecColor, FontColor, FontSize, {}}
+    str.builder_init_none(&Note.Text, Allocator)
+    return Note
+}
+
+NewCanvas :: proc(Name: string, FontFilename: string, Allocator := context.allocator) -> ^canvas 
+{
+    Font := rl.LoadFont(str.clone_to_cstring(FontFilename, context.temp_allocator))
+    if Font == {} 
+    {
+        Font = rl.GetFontDefault()
+    }
+
+    Canvas := new(canvas, Allocator)
+    Canvas.Name = str.clone(Name, Allocator)
+    Canvas.FontFilename = str.clone(FontFilename, Allocator)
+    Canvas.Font = Font
+    Canvas.HotNoteIdx = -1
+    Canvas.ActiveNoteIdx = -1
+    Canvas.Notes = make([dynamic]note, Allocator)
+    return Canvas
+}
+
+DeleteCanvas :: proc(Canvas: ^canvas) 
+{
+    delete(Canvas.Name)
+    delete(Canvas.FontFilename)
+    rl.UnloadFont(Canvas.Font)
+    delete(Canvas.Notes)
+    free(Canvas)
+}
+
+NewSonState :: proc(Canvas: ^canvas = nil, Allocator := context.allocator) -> ^son_state 
+{
+    Son := new(son_state, Allocator)
+    Son.FrameCount = 1
+    Son.Canvas = Canvas
+    Son.Initialized = true
+    return Son
+}
 
 UpdateMouseButtonClicked :: proc(Button: ^mouse_button_state) 
 {
@@ -365,22 +426,194 @@ RlRecAdd :: proc(Rec1: rl.Rectangle, Addend: [4]f32) -> rl.Rectangle
     return NewRec
 }
 
-SaveCanvas :: proc(Canvas: canvas, Filename: string) 
+NoteSize :: proc(Note: note) -> int 
 {
+    Size :=
+        size_of(Note.Rec) +
+        size_of(Note.RecColor) +
+        size_of(Note.FontColor) +
+        size_of(Note.FontSize) +
+        len(str.to_string(Note.Text))
+    return Size
 }
 
-LoadCanvas :: proc(Canvas: ^canvas, Filename: string) 
+CanvasSize :: proc(Canvas: canvas) -> int 
 {
+    Size := size_of(Canvas)
+    Size += len(Canvas.Name)
+    return Size
 }
 
-NoteColors := []rl.Color {
-    rl.LIGHTGRAY,
-    rl.YELLOW,
-    rl.PINK,
-    rl.VIOLET,
-    rl.MAROON,
-    rl.BEIGE,
-    rl.MAGENTA,
+IncrementOffsetsByTypeVal :: proc(From, To: ^int, $F: typeid, TInc: int) 
+{
+    From^ += size_of(F)
+    To^ += TInc
+}
+
+IncrementOffsetsByValType :: proc(From, To: ^int, FInc: int, $T: typeid) 
+{
+    From^ += FInc
+    To^ += size_of(T)
+}
+
+IncrementOffsetsByType :: proc(From, To: ^int, $F: typeid, $T: typeid) 
+{
+    From^ += size_of(F)
+    To^ += size_of(T)
+}
+
+IncrementOffsetsByVal :: proc(From, To: ^int, FInc, TInc: int) 
+{
+    From^ += FInc
+    To^ += TInc
+}
+
+IncrementOffsets :: proc 
+{
+    IncrementOffsetsByTypeVal,
+    IncrementOffsetsByValType,
+    IncrementOffsetsByVal,
+    IncrementOffsetsByType,
+}
+
+DEFAULT_SAVE_DIR :: "saves/"
+CANVAS_EXTENSION :: ".soncanv"
+
+SaveCanvas :: proc(
+    Canvas: ^canvas,
+    DirectoryName := DEFAULT_SAVE_DIR,
+    Allocator := context.temp_allocator,
+) -> (
+    Err: os.Error,
+) 
+{
+    DirectoryExists := os.is_dir_path(DirectoryName)
+    if DirectoryName != DEFAULT_SAVE_DIR && !DirectoryExists 
+    {
+        return os.ENOENT
+    }
+     else if DirectoryName == DEFAULT_SAVE_DIR && !DirectoryExists 
+    {
+        os.make_directory(DEFAULT_SAVE_DIR) or_return
+    }
+
+    FilenameB: str.Builder
+    str.builder_init_none(&FilenameB, Allocator)
+    str.write_string(&FilenameB, DirectoryName)
+    str.write_string(&FilenameB, Canvas.Name)
+    str.write_string(&FilenameB, CANVAS_EXTENSION)
+
+    SavefileName := str.to_string(FilenameB)
+    Handle := os.open(
+        SavefileName,
+        os.O_WRONLY | os.O_CREATE | os.O_TRUNC,
+        os.S_IRUSR | os.S_IWUSR,
+    ) or_return
+    defer os.close(Handle)
+
+
+    TextSize := len(Canvas.Name)
+    os.write_ptr(Handle, &TextSize, size_of(TextSize)) or_return
+    os.write_string(Handle, Canvas.Name) or_return
+
+    TextSize = len(Canvas.FontFilename)
+    os.write_ptr(Handle, &TextSize, size_of(TextSize)) or_return
+    os.write_string(Handle, Canvas.FontFilename) or_return
+
+    NoteCount := len(Canvas.Notes)
+    os.write_ptr(Handle, &NoteCount, size_of(NoteCount)) or_return
+
+    for &Note in Canvas.Notes 
+    {
+        os.write_ptr(Handle, &Note.Rec, size_of(Note.Rec)) or_return
+        os.write_ptr(Handle, &Note.RecColor, size_of(Note.RecColor)) or_return
+        os.write_ptr(Handle, &Note.FontColor, size_of(Note.FontColor)) or_return
+        os.write_ptr(Handle, &Note.FontSize, size_of(Note.FontSize)) or_return
+
+        Text := str.to_string(Note.Text)
+        TextSize = len(Text)
+        os.write_ptr(Handle, &TextSize, size_of(TextSize)) or_return
+        os.write_string(Handle, Text) or_return
+    }
+
+    fmt.printfln("Successfully saved canvas %v to %v", Canvas.Name, SavefileName)
+    return os.ERROR_NONE
+}
+
+
+LoadCanvas :: proc(
+    CanvasName: string,
+    DirectoryName := DEFAULT_SAVE_DIR,
+    CanvasAllocator := context.allocator,
+    TempAllocator := context.temp_allocator,
+) -> (
+    Canvas: ^canvas,
+    Err: os.Error,
+) 
+{
+    if !os.is_dir_path(DirectoryName) 
+    {
+        return {}, os.ENOENT
+    }
+
+    FilenameB: str.Builder
+    str.builder_init_none(&FilenameB, TempAllocator)
+    str.write_string(&FilenameB, DirectoryName)
+    str.write_string(&FilenameB, CanvasName)
+    str.write_string(&FilenameB, CANVAS_EXTENSION)
+    Bytes := os.read_entire_file_from_filename_or_err(
+        str.to_string(FilenameB),
+        TempAllocator,
+    ) or_return
+
+    Off: int
+    TextSize := slice.to_type(Bytes[Off:], int)
+
+    Off += size_of(int)
+    Name := string(Bytes[Off:Off + TextSize])
+
+    Off += TextSize
+    TextSize = slice.to_type(Bytes[Off:], int)
+
+    Off += size_of(int)
+    FontFilename := string(Bytes[Off:Off + TextSize])
+
+    Off += TextSize
+    NoteCount := slice.to_type(Bytes[Off:], int)
+
+    Canvas = NewCanvas(Name, FontFilename, CanvasAllocator)
+    Off += size_of(int)
+
+    for i in 0 ..< NoteCount 
+    {
+        append(&Canvas.Notes, note{})
+        Note := &Canvas.Notes[i]
+
+        Note.Rec = slice.to_type(Bytes[Off:], type_of(Note.Rec))
+
+        Off += size_of(Note.Rec)
+        Note.RecColor = slice.to_type(Bytes[Off:], type_of(Note.RecColor))
+
+        Off += size_of(Note.RecColor)
+        Note.FontColor = slice.to_type(Bytes[Off:], type_of(Note.FontColor))
+
+        Off += size_of(Note.FontColor)
+        Note.FontSize = slice.to_type(Bytes[Off:], type_of(Note.FontSize))
+
+        Off += size_of(Note.FontSize)
+        TextSize = slice.to_type(Bytes[Off:], int)
+
+        Off += size_of(int)
+        Text := string(Bytes[Off:Off + TextSize])
+
+        str.builder_init_none(&Note.Text, CanvasAllocator)
+        str.write_string(&Note.Text, Text)
+        fmt.println("Note text in load:", str.to_string(Note.Text))
+
+        Off += TextSize
+    }
+
+    return Canvas, os.ERROR_NONE
 }
 
 TrackingAllocatorFini :: proc(Track: ^mem.Tracking_Allocator) 
@@ -395,6 +628,7 @@ TrackingAllocatorFini :: proc(Track: ^mem.Tracking_Allocator)
 
     mem.tracking_allocator_destroy(Track)
 }
+
 
 main :: proc() 
 {
@@ -417,26 +651,26 @@ main :: proc()
     Camera.zoom = 1
 
     FontColor := rl.BLACK
-    Font := rl.LoadFont("/home/ingarsa/.local/share/fonts/d/DroidSansMNFM.ttf")
-    if Font == {} 
-    {
-        fmt.eprintln("Failed to load font!")
-        return
-    }
+    Son.Canvas = NewCanvas("Testing", "/home/ingarsa/.local/share/fonts/d/DroidSansMNFM.ttf")
 
-    Son.FrameCount = 1
-    Son.Canvas.ActiveNoteIdx = -1
-    Son.Canvas.HotNoteIdx = -1
-    Son.Canvas.Font = Font
-    Son.Canvas.Notes = make([dynamic]note)
+    Len := len(Son.Canvas.Notes)
+    fmt.println("Type of len:", typeid_of(type_of(Len)))
+    fmt.println("Size of [dynamic]note:", size_of(Son.Canvas.Notes))
+    fmt.println("Size of note:", size_of(note))
+    fmt.println("Size of canvas:", size_of(Son.Canvas))
     fmt.println("Size of keyboard state:", size_of(Son.Keyboard.Keys))
 
-    AddNote(&Son.Canvas, {256, 128})
-    AddNote(&Son.Canvas, {768, 128})
+    AddNote(Son.Canvas, {256, 128})
+    AddNote(Son.Canvas, {768, 128})
     SetNoteText(&Son.Canvas.Notes[len(Son.Canvas.Notes) - 1], "New text!\nNewline")
-    SetNoteText(&Son.Canvas.Notes[len(Son.Canvas.Notes) - 2], "New text!\nNewline")
+    SetNoteText(
+        &Son.Canvas.Notes[len(Son.Canvas.Notes) - 2],
+        "New text!\nNewline asdfaiodsfjoiasjdfjasoidfjasd",
+    )
+    fmt.println("Size of Note:", size_of(Son.Canvas.Notes[len(Son.Canvas.Notes) - 2]))
+    fmt.println("Size of note text:", size_of(Son.Canvas.Notes[len(Son.Canvas.Notes) - 2].Text))
 
-    Canvas := &Son.Canvas
+    Canvas := Son.Canvas
     Mouse := &Son.Mouse
     Keyboard := &Son.Keyboard
     Keys := &Keyboard.Keys
@@ -471,17 +705,6 @@ main :: proc()
         UpdateMouseButtonClicked(&Mouse.L)
         UpdateMouseButtonClicked(&Mouse.R)
 
-        if false || Son.FrameCount % FPS == 0 
-        {
-            fmt.printfln(
-                "LClicked: %v, LDoubleClicked: %v\nRClicked: %v, RDoubleClicked: %v\n",
-                Mouse.L.Clicked,
-                Mouse.L.DoubleClicked,
-                Mouse.R.Clicked,
-                Mouse.R.DoubleClicked,
-            )
-        }
-
         Camera.zoom += rl.GetMouseWheelMove() * 0.15 * Camera.zoom
         if Camera.zoom <= 0.05 
         {
@@ -514,6 +737,32 @@ main :: proc()
             NoteColor := NoteColors[Son.FrameCount % len(NoteColors)]
             AddNote(Canvas, MouseWorldPos, NoteColor)
             SetNoteText(&Canvas.Notes[len(Canvas.Notes) - 1], "New Note!")
+        }
+         else if Canvas.ActiveNoteMode == .Idle &&
+           Keys[.Left_Control].Down &&
+           Keyboard.KeyPressed == .S 
+        {
+            if SaveErr := SaveCanvas(Son.Canvas); SaveErr != os.ERROR_NONE 
+            {
+                fmt.eprintfln("Failed to save canvas %v (error %v)", Son.Canvas.Name, SaveErr)
+                return
+            }
+        }
+         else if Canvas.ActiveNoteMode == .Idle &&
+           Keys[.Left_Control].Down &&
+           Keyboard.KeyPressed == .L 
+        {
+            if LoadedCanvas, LoadErr := LoadCanvas(Son.Canvas.Name); LoadErr == os.ERROR_NONE 
+            {
+                DeleteCanvas(Son.Canvas)
+                Son.Canvas = LoadedCanvas
+                Canvas = LoadedCanvas
+            }
+             else 
+            {
+                fmt.eprintfln("Failed to load canvas %v (error %v)", Son.Canvas.Name, LoadErr)
+                return
+            }
         }
 
         UnsetHotNote(Canvas)
@@ -618,6 +867,11 @@ main :: proc()
             rl.DrawRectangleRec(Note.Rec, Note.RecColor)
             if Text, AllocOk := str.to_cstring(&Note.Text); AllocOk == .None 
             {
+                if Son.FrameCount % FPS == 0 
+                {
+                    fmt.println("Note text in rendering:", str.to_string(Note.Text))
+                    fmt.println("Note text in rendering cstring:", Text)
+                }
                 Pos := rl.Vector2{Note.Rec.x + NOTE_TEXT_OFFSET, Note.Rec.y + NOTE_TEXT_OFFSET}
                 rl.DrawTextPro(Canvas.Font, Text, Pos, {}, 0, Note.FontSize, 0, Note.FontColor)
             }
