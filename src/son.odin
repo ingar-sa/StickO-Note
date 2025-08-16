@@ -31,33 +31,61 @@ NoteColors := []rl.Color {
     rl.MAGENTA,
 }
 
-corner :: enum 
-{
+corner :: enum {
     TL,
     TR,
     BL,
     BR,
 }
 
-note_mode :: enum 
-{
+note_mode :: enum {
     Idle,
     Moving,
     Resizing,
     Typing,
 }
 
-CURSOR_POS_NONE :: -2
-CURSSOR_POS_FRONT :: -1
-text_box :: struct 
-{
-    Text:      str.Builder,
+undo_text :: struct {
     CursorPos: int,
-    UndoBuf:   [dynamic]string,
+    Text:      string,
 }
 
-CursorPosFromClick :: proc(ClickPos: rl.Vector2, Note: note) -> int 
-{
+undo :: union {
+    undo_text,
+    int,
+}
+
+TxtBoxUndo :: proc(Box: ^text_box) {
+    if len(Box.UndoBuf) == 0 {
+        return
+    }
+
+    Undo := pop(&Box.UndoBuf)
+    switch U in Undo {
+    case undo_text:
+        TxtBoxClearText(Box)
+        TxtBoxAddText(Box, U.Text)
+        Box.CursorPos = U.CursorPos
+    case int:
+        TxtBoxBkspcBytes(Box, U)
+    }
+    // NOTE: (isa): The above procedures adds the action to the undobuf
+    // so this is a hacky way to undo (hihi) that
+    // The procs perform memory allocation, so this is pretty bad performance-wise
+    pop(&Box.UndoBuf)
+}
+
+
+// TODO: (isa): Should cursor pos be in bytes or runes? (probably bytes)
+CURSOR_POS_NONE :: -2
+CURSSOR_POS_FRONT :: -1
+text_box :: struct {
+    Text:      str.Builder,
+    CursorPos: int,
+    UndoBuf:   [dynamic]undo,
+}
+
+CursorPosFromClick :: proc(ClickPos: rl.Vector2, Note: note) -> int {
 
     return 0
 }
@@ -67,8 +95,7 @@ CursorPosFromClick :: proc(ClickPos: rl.Vector2, Note: note) -> int
  * Pinned state where it won't resize or move
  * Store text separately to make search and stuff easier?
 */
-note :: struct 
-{
+note :: struct {
     Rec:           rl.Rectangle,
     RecColor:      rl.Color,
     FontColor:     rl.Color,
@@ -80,8 +107,7 @@ note :: struct
 /*
  * Undo note movement and resizing
  */
-canvas :: struct 
-{
+canvas :: struct {
     Name:           string,
     FontFilename:   string,
     Font:           rl.Font,
@@ -94,8 +120,7 @@ canvas :: struct
     Notes:          [dynamic]note,
 }
 
-mouse_button_state :: struct 
-{
+mouse_button_state :: struct {
     Up:            bool,
     Down:          bool,
     Pressed:       bool,
@@ -107,13 +132,11 @@ mouse_button_state :: struct
     PrevClickPos:  rl.Vector2,
 }
 
-mouse_state :: struct 
-{
+mouse_state :: struct {
     L, R: mouse_button_state,
 }
 
-keyboard_key :: enum 
-{
+keyboard_key :: enum {
     Left_Control,
     Left_Shift,
     Enter,
@@ -125,8 +148,7 @@ keyboard_key :: enum
     Right,
 }
 
-key_state :: struct 
-{
+key_state :: struct {
     Pressed:       bool,
     PressedRepeat: bool,
     Down:          bool,
@@ -135,16 +157,14 @@ key_state :: struct
     FrameHeldFrom: uint,
 }
 
-keyboard_state :: struct 
-{
+keyboard_state :: struct {
     KeyPressed:  rl.KeyboardKey,
     CharPressed: rune,
     Keys:        [keyboard_key]key_state,
 }
 
 Son: son_state
-son_state :: struct 
-{
+son_state :: struct {
     Initialized: bool,
     FrameCount:  uint,
     Canvas:      ^canvas,
@@ -162,13 +182,12 @@ NewNoteDim :: proc(
     Text := "",
     Allocator := context.allocator,
     UndoBufAllocator := context.allocator,
-) -> note 
-{
+) -> note {
     Note := note{{X, Y, Width, Height}, NoteColor, FontColor, FontSize, {}, {}}
     Note.CursorPos = CURSOR_POS_NONE
     str.builder_init_len(&Note.Text, len(Text), Allocator)
     str.write_string(&Note.Text, Text)
-    Note.UndoBuf = make([dynamic]string, UndoBufAllocator)
+    Note.UndoBuf = make([dynamic]undo, UndoBufAllocator)
     return Note
 }
 
@@ -180,8 +199,7 @@ NewNoteRec :: proc(
     Text := "",
     Allocator := context.allocator,
     UndoBufAllocator := context.allocator,
-) -> note 
-{
+) -> note {
     Rec := Rec
     Rec.width = max(Rec.width, NOTE_MIN_DIM.x)
     Rec.height = max(Rec.height, NOTE_MIN_DIM.y)
@@ -190,22 +208,19 @@ NewNoteRec :: proc(
     Note.CursorPos = CURSOR_POS_NONE
     str.builder_init_len(&Note.Text, len(Text), Allocator)
     str.write_string(&Note.Text, Text)
-    Note.UndoBuf = make([dynamic]string, UndoBufAllocator)
+    Note.UndoBuf = make([dynamic]undo, UndoBufAllocator)
 
     return Note
 }
 
-NewNote :: proc 
-{
+NewNote :: proc {
     NewNoteDim,
     NewNoteRec,
 }
 
-NewCanvas :: proc(Name: string, FontFilename: string, Allocator := context.allocator) -> ^canvas 
-{
+NewCanvas :: proc(Name: string, FontFilename: string, Allocator := context.allocator) -> ^canvas {
     Font := rl.LoadFont(str.clone_to_cstring(FontFilename, context.temp_allocator))
-    if Font == {} 
-    {
+    if Font == {} {
         Font = rl.GetFontDefault()
     }
 
@@ -219,8 +234,7 @@ NewCanvas :: proc(Name: string, FontFilename: string, Allocator := context.alloc
     return Canvas
 }
 
-DeleteCanvas :: proc(Canvas: ^canvas) 
-{
+DeleteCanvas :: proc(Canvas: ^canvas) {
     delete(Canvas.Name)
     delete(Canvas.FontFilename)
     rl.UnloadFont(Canvas.Font)
@@ -228,8 +242,7 @@ DeleteCanvas :: proc(Canvas: ^canvas)
     free(Canvas)
 }
 
-UpdateMouseButtonClicked :: proc(Button: ^mouse_button_state) 
-{
+UpdateMouseButtonClicked :: proc(Button: ^mouse_button_state) {
     Button.DoubleClicked = Button.DoubleClicked || (Button.Clicked && Button.Pressed)
     Button.Clicked = Button.Clicked || (!Button.Clicked && Button.Pressed)
     Button.FrameClicked =
@@ -238,33 +251,28 @@ UpdateMouseButtonClicked :: proc(Button: ^mouse_button_state)
     Button.ClickPos = rl.GetMousePosition()
 }
 
-ResetMouseButtonClicked :: proc(Button: ^mouse_button_state) 
-{
+ResetMouseButtonClicked :: proc(Button: ^mouse_button_state) {
     Button.Clicked = false
     Button.DoubleClicked = false
     Button.FrameClicked = 0
 }
 
-GetRlMouseButtonState :: proc(ButtonState: ^mouse_button_state, Button: rl.MouseButton) 
-{
+GetRlMouseButtonState :: proc(ButtonState: ^mouse_button_state, Button: rl.MouseButton) {
     ButtonState.Up = rl.IsMouseButtonReleased(Button)
     ButtonState.Down = rl.IsMouseButtonDown(Button)
     ButtonState.Pressed = rl.IsMouseButtonPressed(Button)
     ButtonState.Released = rl.IsMouseButtonReleased(Button)
 }
 
-GetRlKeyboardKeyState :: proc(State: ^key_state, Key: rl.KeyboardKey) 
-{
+GetRlKeyboardKeyState :: proc(State: ^key_state, Key: rl.KeyboardKey) {
     State.Pressed = rl.IsKeyPressed(Key)
     State.PressedRepeat = rl.IsKeyPressedRepeat(Key)
     State.Down = rl.IsKeyDown(Key)
     State.Up = rl.IsKeyUp(Key)
 }
 
-KeyToRlKey :: proc(Key: keyboard_key) -> rl.KeyboardKey 
-{
-    switch Key 
-    {
+KeyToRlKey :: proc(Key: keyboard_key) -> rl.KeyboardKey {
+    switch Key {
     case .Left_Control:
         return .LEFT_CONTROL
     case .Left_Shift:
@@ -288,8 +296,7 @@ KeyToRlKey :: proc(Key: keyboard_key) -> rl.KeyboardKey
     }
 }
 
-IsFrameIntervalWDelay :: proc(From: uint, Interval, Delay: f32) -> bool 
-{
+IsFrameIntervalWDelay :: proc(From: uint, Interval, Delay: f32) -> bool {
     FrameDelta := SonFrameDelta(From)
     Result :=
         FrameDelta >= SecondsToFrameCount(Delay, FPS) &&
@@ -297,21 +304,18 @@ IsFrameIntervalWDelay :: proc(From: uint, Interval, Delay: f32) -> bool
     return Result
 }
 
-SonFrameDelta :: proc(From: uint) -> uint 
-{
+SonFrameDelta :: proc(From: uint) -> uint {
     Delta := Son.FrameCount - From
     return Delta
 }
 
-UnsetActiveNote :: proc(Canvas: ^canvas) 
-{
+UnsetActiveNote :: proc(Canvas: ^canvas) {
     Canvas.ActiveNoteIdx = -1
     Canvas.ActiveNote = nil
     Canvas.ActiveNoteMode = .Idle
 }
 
-SetActiveNote :: proc(Canvas: ^canvas, Idx: int) 
-{
+SetActiveNote :: proc(Canvas: ^canvas, Idx: int) {
     LastIdx := len(Canvas.Notes) - 1
     TopNote := Canvas.Notes[LastIdx]
     NewActiveNote := Canvas.HotNote
@@ -324,33 +328,27 @@ SetActiveNote :: proc(Canvas: ^canvas, Idx: int)
     Canvas.ActiveNote = &Canvas.Notes[Canvas.ActiveNoteIdx]
 }
 
-SetHotNote :: proc(Canvas: ^canvas, Idx: int) 
-{
+SetHotNote :: proc(Canvas: ^canvas, Idx: int) {
     Canvas.HotNoteIdx = Idx
     Canvas.HotNote = &Canvas.Notes[Idx]
 }
 
-UnsetHotNote :: proc(Canvas: ^canvas) 
-{
+UnsetHotNote :: proc(Canvas: ^canvas) {
     Canvas.HotNoteIdx = -1
     Canvas.HotNote = nil
 }
 
-AddNote :: proc(Canvas: ^canvas, Note: note) 
-{
+AddNote :: proc(Canvas: ^canvas, Note: note) {
     append(&Canvas.Notes, Note)
 }
 
-SecondsToFrameCount :: proc(Seconds: f32, Fps: uint) -> uint 
-{
+SecondsToFrameCount :: proc(Seconds: f32, Fps: uint) -> uint {
     Count := uint(math.ceil(Seconds * f32(Fps)))
     return Count
 }
 
-ResizeRecFromCorner :: proc(Rec: ^rl.Rectangle, Corner: corner, Delta: rl.Vector2) 
-{
-    switch Corner 
-    {
+ResizeRecFromCorner :: proc(Rec: ^rl.Rectangle, Corner: corner, Delta: rl.Vector2) {
+    switch Corner {
     case .TL:
         Rec.x += Rec.width + -Delta.x < NOTE_MIN_DIM.x ? Rec.width - NOTE_MIN_DIM.x : Delta.x
         Rec.y += Rec.height + -Delta.y < NOTE_MIN_DIM.y ? Rec.height - NOTE_MIN_DIM.y : Delta.y
@@ -370,8 +368,7 @@ ResizeRecFromCorner :: proc(Rec: ^rl.Rectangle, Corner: corner, Delta: rl.Vector
     }
 }
 
-RenderNoteTextBox :: proc(Note: ^note, Font: rl.Font) 
-{
+RenderNoteTextBox :: proc(Note: ^note, Font: rl.Font) {
     String := str.to_string(Note.Text)
     CString, _ := str.to_cstring(&Note.Text)
     CStringBytes := transmute([^]u8)CString
@@ -386,71 +383,56 @@ RenderNoteTextBox :: proc(Note: ^note, Font: rl.Font)
     Spacing := f32(0.5) // TODO(ingar): Make part of note struct
 
     State := WordWrap ? MeasureDrawState.Measure_State : MeasureDrawState.Draw_State
-    MeasureDrawState :: enum 
-    {
+    MeasureDrawState :: enum {
         Measure_State,
         Draw_State,
     }
 
     StartLine, EndLine, LastK: i32 = -1, -1, -1
     i, k: i32 = 0, 0
-    for i < TextLength 
-    {
+    for i < TextLength {
         CodepointByteCount := i32(0)
         Codepoint := rl.GetCodepoint(cstring(&CStringBytes[i]), &CodepointByteCount)
         Index := rl.GetGlyphIndex(Font, Codepoint)
 
-        if Codepoint == 0x3f 
-        {
+        if Codepoint == 0x3f {
             CodepointByteCount = 1
         }
         i += CodepointByteCount - 1
 
         GlyphWidth: f32
-        if Codepoint != '\n' 
-        {
+        if Codepoint != '\n' {
             GlyphWidth =
                 (Font.glyphs[Index].advanceX == 0) ? Font.recs[Index].width * ScaleFactor : f32(Font.glyphs[Index].advanceX) * ScaleFactor
-            if i + 1 < TextLength 
-            {
+            if i + 1 < TextLength {
                 GlyphWidth += Spacing
             }
         }
 
-        switch State 
-        {
+        switch State {
         case .Measure_State:
-            if Codepoint == ' ' || Codepoint == '\t' || Codepoint == '\n' 
-            {
+            if Codepoint == ' ' || Codepoint == '\t' || Codepoint == '\n' {
                 EndLine = i
             }
 
-            if TextOffsetX + GlyphWidth > Note.Rec.width - 10 
-            {
+            if TextOffsetX + GlyphWidth > Note.Rec.width - 10 {
                 EndLine = (EndLine < 1) ? i : EndLine
-                if i == EndLine 
-                {
+                if i == EndLine {
                     EndLine -= CodepointByteCount
                 }
-                if StartLine + CodepointByteCount == EndLine 
-                {
+                if StartLine + CodepointByteCount == EndLine {
                     EndLine = i - CodepointByteCount
                 }
 
                 State = .Draw_State
-            }
-             else if i + 1 == TextLength 
-            {
+            } else if i + 1 == TextLength {
                 EndLine = i
                 State = .Draw_State
-            }
-             else if Codepoint == '\n' 
-            {
+            } else if Codepoint == '\n' {
                 State = .Draw_State
             }
 
-            if State == .Draw_State 
-            {
+            if State == .Draw_State {
                 TextOffsetX = 0
                 i = StartLine
                 GlyphWidth = 0
@@ -460,18 +442,13 @@ RenderNoteTextBox :: proc(Note: ^note, Font: rl.Font)
                 k = Temp
             }
         case .Draw_State:
-            if Codepoint == '\n' 
-            {
-                if !WordWrap 
-                {
+            if Codepoint == '\n' {
+                if !WordWrap {
                     TextOffsetY += (FontBaseSize + FontBaseSize / 2) * ScaleFactor
                     TextOffsetX = 0
                 }
-            }
-             else 
-            {
-                if !WordWrap && TextOffsetX + GlyphWidth > Note.Rec.width - 10 
-                {
+            } else {
+                if !WordWrap && TextOffsetX + GlyphWidth > Note.Rec.width - 10 {
                     TextOffsetY += (FontBaseSize + FontBaseSize / 2) * ScaleFactor
                     TextOffsetX = 0
                 }
@@ -482,8 +459,7 @@ RenderNoteTextBox :: proc(Note: ^note, Font: rl.Font)
 
                 DrawX := DrawPos.x + TextOffsetX
                 DrawY := DrawPos.y + TextOffsetY
-                if Codepoint != ' ' && Codepoint != '\t' 
-                {
+                if Codepoint != ' ' && Codepoint != '\t' {
                     rl.DrawTextCodepoint(
                         Font,
                         Codepoint,
@@ -494,19 +470,15 @@ RenderNoteTextBox :: proc(Note: ^note, Font: rl.Font)
                 }
             }
 
-            if TextOffsetY + FontBaseSize * ScaleFactor > Note.Rec.height - 10 
-            {
+            if TextOffsetY + FontBaseSize * ScaleFactor > Note.Rec.height - 10 {
                 // TODO: (isa): One frame of lag because the text is rendered after the note
                 Note.Rec.height += FontBaseSize * ScaleFactor
                 //break
             }
 
-            if Note.CursorPos != CURSOR_POS_NONE 
-            {
-                if int(i) == Note.CursorPos 
-                {
-                    if Codepoint == '\n' 
-                    {
+            if Note.CursorPos != CURSOR_POS_NONE {
+                if int(i) == Note.CursorPos {
+                    if Codepoint == '\n' {
                         TextOffsetY += (FontBaseSize + FontBaseSize / 2) * ScaleFactor
                         TextOffsetX = 0
                     }
@@ -518,9 +490,7 @@ RenderNoteTextBox :: proc(Note: ^note, Font: rl.Font)
                     EndPos := rl.Vector2{CursorX, (DrawY + (FontBaseSize * ScaleFactor))}
                     rl.DrawLineEx(StartPos, EndPos, 2, rl.BLACK)
                 }
-            }
-             else if Note.CursorPos == CURSSOR_POS_FRONT 
-            {
+            } else if Note.CursorPos == CURSSOR_POS_FRONT {
                 rl.DrawLineEx(
                     {DrawPos.x, DrawPos.y},
                     {DrawPos.x, DrawPos.y + (FontBaseSize * ScaleFactor)},
@@ -530,8 +500,7 @@ RenderNoteTextBox :: proc(Note: ^note, Font: rl.Font)
                 // TODO: (isa): Draw before first character
             }
 
-            if WordWrap && i == EndLine 
-            {
+            if WordWrap && i == EndLine {
                 TextOffsetY += (FontBaseSize + FontBaseSize / 2) * ScaleFactor
                 TextOffsetX = 0
                 StartLine = EndLine
@@ -543,8 +512,7 @@ RenderNoteTextBox :: proc(Note: ^note, Font: rl.Font)
             }
         }
 
-        if TextOffsetX != 0 || Codepoint != ' ' 
-        {
+        if TextOffsetX != 0 || Codepoint != ' ' {
             TextOffsetX += GlyphWidth
         }
 
@@ -552,8 +520,7 @@ RenderNoteTextBox :: proc(Note: ^note, Font: rl.Font)
         k += 1
     }
 
-    if Note.CursorPos != CURSOR_POS_NONE && TextLength == 0 
-    {
+    if Note.CursorPos != CURSOR_POS_NONE && TextLength == 0 {
         DrawX := DrawPos.x + TextOffsetX
         DrawY := DrawPos.y + TextOffsetY
 
@@ -564,99 +531,80 @@ RenderNoteTextBox :: proc(Note: ^note, Font: rl.Font)
     }
 }
 
-SetNoteText :: proc(Note: ^note, Text: string) 
-{
+SetNoteText :: proc(Note: ^note, Text: string) {
     str.builder_reset(&Note.Text)
     str.write_string(&Note.Text, Text)
 }
 
-AddRuneToText :: proc(Text: ^str.Builder, Rune: rune) 
-{
-    if Rune != 0 
-    {
+AddRuneToText :: proc(Text: ^str.Builder, Rune: rune) {
+    if Rune != 0 {
         str.write_rune(Text, Rune)
     }
 }
 
-BackspaceRune :: proc(Text: ^str.Builder, Count: int) 
-{
-    for _ in 0 ..< Count 
-    {
+BackspaceRune :: proc(Text: ^str.Builder, Count: int) {
+    for _ in 0 ..< Count {
         str.pop_rune(Text)
     }
 }
 
-BackspaceByte :: proc(Text: ^str.Builder, Count: int) 
-{
-    for _ in 0 ..< Count 
-    {
+BackspaceByte :: proc(Text: ^str.Builder, Count: int) {
+    for _ in 0 ..< Count {
         str.pop_byte(Text)
     }
 }
 
 // TODO: (isa): Make relative to CursorPos
-TxtBoxAddTextRune :: proc(Box: ^text_box, Text: rune) 
-{
-    String := str.clone(str.to_string(Box.Text), context.temp_allocator)
+TxtBoxAddTextRune :: proc(Box: ^text_box, Rune: rune) {
+    Cloned := str.clone(str.to_string(Box.Text), context.temp_allocator)
     str.builder_reset(&Box.Text)
-    str.write_string(&Box.Text, String[:Box.CursorPos + 1])
-    Written, _ := str.write_rune(&Box.Text, Text)
-    str.write_string(&Box.Text, String[Box.CursorPos + 1:])
+    str.write_string(&Box.Text, Cloned[:Box.CursorPos + 1])
+    Written, _ := str.write_rune(&Box.Text, Rune)
+    str.write_string(&Box.Text, Cloned[Box.CursorPos + 1:])
     Box.CursorPos += Written
+    append(&Box.UndoBuf, Written)
     fmt.printfln("Cursorpos %v, builder len %v", Box.CursorPos, str.builder_len(Box.Text) - 1)
 }
 
-TxtBoxAddTextString :: proc(Box: ^text_box, Text: string) 
-{
-    String := str.clone(str.to_string(Box.Text), context.temp_allocator)
+TxtBoxAddTextString :: proc(Box: ^text_box, String: string) {
+    Cloned := str.clone(str.to_string(Box.Text), context.temp_allocator)
     str.builder_reset(&Box.Text)
-    str.write_string(&Box.Text, String[:Box.CursorPos + 1])
-    str.write_string(&Box.Text, Text)
-    str.write_string(&Box.Text, String[Box.CursorPos + 1:])
-    Box.CursorPos += len(Text)
+    str.write_string(&Box.Text, Cloned[:Box.CursorPos + 1])
+    str.write_string(&Box.Text, String)
+    str.write_string(&Box.Text, Cloned[Box.CursorPos + 1:])
+    Box.CursorPos += len(String)
+    append(&Box.UndoBuf, len(String))
 }
 
-TxtBoxAddText :: proc 
-{
+TxtBoxAddText :: proc {
     TxtBoxAddTextRune,
     TxtBoxAddTextString,
 }
 
-TxtBoxBkspcBytes :: proc(Box: ^text_box, Count: int) 
-{
-    //UndoString: str.Builder
-    //str.builder_init_len(&UndoString, Count, context.temp_allocator)
-
-    String := str.clone(str.to_string(Box.Text), context.temp_allocator)
-
-
-    //Box.CursorPos -= Count
-    //append(&Box.UndoBuf, str.to_string(UndoString))
-}
-
-TxtBoxBkspcRunes :: proc(Box: ^text_box, Count: int) 
-{
-    UndoString: str.Builder
-    str.builder_init_len(&UndoString, Count, context.temp_allocator)
-
-    for _ in 0 ..< Count 
-    {
-        Popped, Width := str.pop_rune(&Box.Text)
-        Box.CursorPos -= Width
-        str.write_rune(&UndoString, Popped)
+// TODO: (isa): Make relative to cursor
+TxtBoxBkspcBytes :: proc(Box: ^text_box, Count: int, Allocator := context.allocator) {
+    append(&Box.UndoBuf, undo_text{Box.CursorPos, str.clone(str.to_string(Box.Text), Allocator)})
+    for _ in 0 ..< Count {
+        str.pop_byte(&Box.Text)
     }
 
-    append(&Box.UndoBuf, str.to_string(UndoString))
+    Box.CursorPos -= Count
 }
 
-TxtBoxClearText :: proc(Box: ^text_box) 
-{
+TxtBoxBkspcRunes :: proc(Box: ^text_box, Count: int, Allocator := context.allocator) {
+    append(&Box.UndoBuf, undo_text{Box.CursorPos, str.clone(str.to_string(Box.Text), Allocator)})
+    for _ in 0 ..< Count {
+        _, Width := str.pop_rune(&Box.Text)
+        Box.CursorPos -= Width
+    }
+}
+
+TxtBoxClearText :: proc(Box: ^text_box) {
     str.builder_reset(&Box.Text)
     Box.CursorPos = CURSSOR_POS_FRONT
 }
 
-DrawNoteOutline :: proc(Note: note) 
-{
+DrawNoteOutline :: proc(Note: note) {
     OutlineWidth := f32(8) + Note.Rec.width / 110 + Note.Rec.height / 110
     Outline := rl.Rectangle {
         Note.Rec.x - OutlineWidth,
@@ -669,11 +617,9 @@ DrawNoteOutline :: proc(Note: note)
     rl.DrawRectangleLinesEx(Outline, OutlineWidth, OutlineColor)
 }
 
-DrawCornerLines :: proc(Note: note, Corner: corner, MousePos: rl.Vector2) 
-{
+DrawCornerLines :: proc(Note: note, Corner: corner, MousePos: rl.Vector2) {
     Rec := Note.Rec
-    switch Corner 
-    {
+    switch Corner {
     case .TL:
         StartH := rl.Vector2{Rec.x + 2, Rec.y + 4}
         StartV := rl.Vector2{Rec.x + 4, Rec.y + 2}
@@ -701,23 +647,19 @@ CollisionPointRecCorner :: proc(
     Point: [2]f32,
     Rec: rl.Rectangle,
     CornerDims: [2]f32,
-) -> Maybe(corner) 
-{
+) -> Maybe(corner) {
     TLRec := rl.Rectangle{Rec.x, Rec.y, CornerDims.x, CornerDims.y}
-    if rl.CheckCollisionPointRec(Point, TLRec) 
-    {
+    if rl.CheckCollisionPointRec(Point, TLRec) {
         return .TL
     }
 
     TRRec := rl.Rectangle{Rec.x + Rec.width - CornerDims.x, Rec.y, CornerDims.x, CornerDims.y}
-    if rl.CheckCollisionPointRec(Point, TRRec) 
-    {
+    if rl.CheckCollisionPointRec(Point, TRRec) {
         return .TR
     }
 
     BLRec := rl.Rectangle{Rec.x, Rec.y + Rec.height - CornerDims.y, CornerDims.x, CornerDims.y}
-    if rl.CheckCollisionPointRec(Point, BLRec) 
-    {
+    if rl.CheckCollisionPointRec(Point, BLRec) {
         return .BL
     }
 
@@ -727,16 +669,14 @@ CollisionPointRecCorner :: proc(
         CornerDims.x,
         CornerDims.y,
     }
-    if rl.CheckCollisionPointRec(Point, BRRec) 
-    {
+    if rl.CheckCollisionPointRec(Point, BRRec) {
         return .BR
     }
 
     return nil
 }
 
-RlRecAdd :: proc(Rec1: rl.Rectangle, Addend: [4]f32) -> rl.Rectangle 
-{
+RlRecAdd :: proc(Rec1: rl.Rectangle, Addend: [4]f32) -> rl.Rectangle {
     NewRec := rl.Rectangle {
         Rec1.x + Addend[0],
         Rec1.y + Addend[1],
@@ -746,47 +686,40 @@ RlRecAdd :: proc(Rec1: rl.Rectangle, Addend: [4]f32) -> rl.Rectangle
     return NewRec
 }
 
-IncrementOffsetsByTypeVal :: proc(From, To: ^int, $F: typeid, TInc: int) 
-{
+IncrementOffsetsByTypeVal :: proc(From, To: ^int, $F: typeid, TInc: int) {
     From^ += size_of(F)
     To^ += TInc
 }
 
-IncrementOffsetsByValType :: proc(From, To: ^int, FInc: int, $T: typeid) 
-{
+IncrementOffsetsByValType :: proc(From, To: ^int, FInc: int, $T: typeid) {
     From^ += FInc
     To^ += size_of(T)
 }
 
-IncrementOffsetsByType :: proc(From, To: ^int, $F: typeid, $T: typeid) 
-{
+IncrementOffsetsByType :: proc(From, To: ^int, $F: typeid, $T: typeid) {
     From^ += size_of(F)
     To^ += size_of(T)
 }
 
-IncrementOffsetsByVal :: proc(From, To: ^int, FInc, TInc: int) 
-{
+IncrementOffsetsByVal :: proc(From, To: ^int, FInc, TInc: int) {
     From^ += FInc
     To^ += TInc
 }
 
-IncrementOffsets :: proc 
-{
+IncrementOffsets :: proc {
     IncrementOffsetsByTypeVal,
     IncrementOffsetsByValType,
     IncrementOffsetsByVal,
     IncrementOffsetsByType,
 }
 
-SliceToTypeOffset :: proc(Buf: []byte, $T: typeid, Off: ^int) -> T 
-{
+SliceToTypeOffset :: proc(Buf: []byte, $T: typeid, Off: ^int) -> T {
     Val := slice.to_type(Buf[Off^:], T)
     Off^ += size_of(T)
     return Val
 }
 
-SliceToStringOffset :: proc(Buf: []byte, StringLen: int, Off: ^int) -> string 
-{
+SliceToStringOffset :: proc(Buf: []byte, StringLen: int, Off: ^int) -> string {
     String := string(Buf[Off^:Off^ + StringLen])
     Off^ += StringLen
     return String
@@ -802,15 +735,11 @@ SaveCanvas :: proc(
     Allocator := context.temp_allocator,
 ) -> (
     Err: os.Error,
-) 
-{
+) {
     DirectoryExists := os.is_dir_path(DirectoryName)
-    if DirectoryName != DEFAULT_SAVE_DIR && !DirectoryExists 
-    {
+    if DirectoryName != DEFAULT_SAVE_DIR && !DirectoryExists {
         return os.ENOENT
-    }
-     else if DirectoryName == DEFAULT_SAVE_DIR && !DirectoryExists 
-    {
+    } else if DirectoryName == DEFAULT_SAVE_DIR && !DirectoryExists {
         os.make_directory(DEFAULT_SAVE_DIR) or_return
     }
 
@@ -840,8 +769,7 @@ SaveCanvas :: proc(
     NoteCount := len(Canvas.Notes)
     os.write_ptr(Handle, &NoteCount, size_of(NoteCount)) or_return
 
-    for &Note in Canvas.Notes 
-    {
+    for &Note in Canvas.Notes {
         os.write_ptr(Handle, &Note.Rec, size_of(Note.Rec)) or_return
         os.write_ptr(Handle, &Note.RecColor, size_of(Note.RecColor)) or_return
         os.write_ptr(Handle, &Note.FontColor, size_of(Note.FontColor)) or_return
@@ -866,10 +794,8 @@ LoadCanvas :: proc(
 ) -> (
     Canvas: ^canvas,
     Err: os.Error,
-) 
-{
-    if !os.is_dir_path(DirectoryName) 
-    {
+) {
+    if !os.is_dir_path(DirectoryName) {
         return {}, os.ENOENT
     }
 
@@ -891,8 +817,7 @@ LoadCanvas :: proc(
     NoteCount := SliceToTypeOffset(Bytes, int, &Off)
     Canvas = NewCanvas(Name, FontFilename, CanvasAllocator)
 
-    for i in 0 ..< NoteCount 
-    {
+    for i in 0 ..< NoteCount {
         Note: note
         Rec := SliceToTypeOffset(Bytes, type_of(Note.Rec), &Off)
         RecColor := SliceToTypeOffset(Bytes, type_of(Note.RecColor), &Off)
@@ -916,12 +841,9 @@ LoadCanvas :: proc(
 }
 
 
-TrackingAllocatorFini :: proc(Track: ^mem.Tracking_Allocator) 
-{
-    if len(Track.allocation_map) > 0 
-    {
-        for _, Entry in Track.allocation_map 
-        {
+TrackingAllocatorFini :: proc(Track: ^mem.Tracking_Allocator) {
+    if len(Track.allocation_map) > 0 {
+        for _, Entry in Track.allocation_map {
             fmt.eprintfln("%v leaked %v bytes\n", Entry.location, Entry.size)
         }
     }
@@ -930,8 +852,7 @@ TrackingAllocatorFini :: proc(Track: ^mem.Tracking_Allocator)
 }
 
 
-main :: proc() 
-{
+main :: proc() {
     Track: mem.Tracking_Allocator
     mem.tracking_allocator_init(&Track, context.allocator)
     context.allocator = mem.tracking_allocator(&Track)
@@ -952,16 +873,12 @@ main :: proc()
 
     FontColor := rl.BLACK
     Canvas, LoadErr := LoadCanvas("Testing")
-    if LoadErr != os.ERROR_NONE 
-    {
-        if LoadErr == os.ENOENT 
-        {
+    if LoadErr != os.ERROR_NONE {
+        if LoadErr == os.ENOENT {
             Canvas = NewCanvas("Testing", "/home/ingarsa/.local/share/fonts/d/DroidSansMNFM.ttf")
             Text := "Failed to load canvas Testing from file!\nIt did not exist"
             AddNote(Canvas, NewNote(768, 128, Text = Text))
-        }
-         else 
-        {
+        } else {
             fmt.eprintfln("Failed to load canvas Testing (error %v)", LoadErr)
         }
     }
@@ -983,8 +900,7 @@ main :: proc()
     LeftArr := &Keys[.Left]
     RightArr := &Keys[.Right]
 
-    for !rl.WindowShouldClose() 
-    {
+    for !rl.WindowShouldClose() {
         rl.BeginDrawing()
         rl.BeginMode2D(Camera)
         rl.ClearBackground(rl.DARKGRAY)
@@ -1001,14 +917,12 @@ main :: proc()
         GetRlMouseButtonState(&Mouse.L, .LEFT)
         GetRlMouseButtonState(&Mouse.R, .RIGHT)
         if Mouse.L.FrameClicked != 0 &&
-           SonFrameDelta(Mouse.L.FrameClicked) >= RESET_CLICKED_FRAME_COUNT 
-        {
+           SonFrameDelta(Mouse.L.FrameClicked) >= RESET_CLICKED_FRAME_COUNT {
             ResetMouseButtonClicked(&Mouse.L)
         }
 
         if Mouse.R.FrameClicked != 0 &&
-           SonFrameDelta(Mouse.R.FrameClicked) >= RESET_CLICKED_FRAME_COUNT 
-        {
+           SonFrameDelta(Mouse.R.FrameClicked) >= RESET_CLICKED_FRAME_COUNT {
             ResetMouseButtonClicked(&Mouse.R)
         }
 
@@ -1016,69 +930,51 @@ main :: proc()
         UpdateMouseButtonClicked(&Mouse.R)
 
         Camera.zoom += rl.GetMouseWheelMove() * 0.15 * Camera.zoom
-        if Camera.zoom <= 0.05 
-        {
+        if Camera.zoom <= 0.05 {
             Camera.zoom = 0.05
         }
 
-        if Mouse.R.Down 
-        {
+        if Mouse.R.Down {
             Camera.target -= ScaledMDelta
         }
 
         Keyboard.CharPressed = rl.GetCharPressed()
         Keyboard.KeyPressed = rl.GetKeyPressed()
-        for &Key, Type in Keys 
-        {
+        for &Key, Type in Keys {
             DownLastFrame := Key.Down
             RlKey := KeyToRlKey(Type)
             GetRlKeyboardKeyState(&Key, RlKey)
             Key.Held = DownLastFrame && Key.Down
-            if Key.FrameHeldFrom == 0 && Key.Held 
-            {
+            if Key.FrameHeldFrom == 0 && Key.Held {
                 Key.FrameHeldFrom = Son.FrameCount - 1
-            }
-             else if !Key.Held 
-            {
+            } else if !Key.Held {
                 Key.FrameHeldFrom = 0
             }
 
-            if Son.FrameCount % 20 == 0 && Type == .Backspace 
-            {
+            if Son.FrameCount % 20 == 0 && Type == .Backspace {
                 //fmt.println(Key, Type)
             }
         }
 
-        if Keyboard.KeyPressed == .ZERO 
-        {
+        if Keyboard.KeyPressed == .ZERO {
             Camera.target = {WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2}
             Camera.offset = {WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2}
             Camera.zoom = 1
-        }
-         else if Canvas.ActiveNoteMode == .Idle && LeftShift.Down && Keyboard.KeyPressed == .N 
-        {
+        } else if Canvas.ActiveNoteMode == .Idle && LeftShift.Down && Keyboard.KeyPressed == .N {
             NoteColor := NoteColors[Son.FrameCount % len(NoteColors)]
             AddNote(Canvas, NewNote(MouseWorldPos.x, MouseWorldPos.y, NoteColor = NoteColor))
             SetNoteText(&Canvas.Notes[len(Canvas.Notes) - 1], "New Note!")
-        }
-         else if Canvas.ActiveNoteMode == .Idle && LeftCtrl.Down && Keyboard.KeyPressed == .S 
-        {
-            if SaveErr := SaveCanvas(Son.Canvas); SaveErr != os.ERROR_NONE 
-            {
+        } else if Canvas.ActiveNoteMode == .Idle && LeftCtrl.Down && Keyboard.KeyPressed == .S {
+            if SaveErr := SaveCanvas(Son.Canvas); SaveErr != os.ERROR_NONE {
                 fmt.eprintfln("Failed to save canvas \"%v\" (error %v)", Son.Canvas.Name, SaveErr)
                 return
             }
-        }
-         else if Canvas.ActiveNoteMode == .Idle && LeftCtrl.Down && Keyboard.KeyPressed == .L 
-        {
-            if LoadedCanvas, LoadErr := LoadCanvas(Son.Canvas.Name); LoadErr == os.ERROR_NONE 
-            {
+        } else if Canvas.ActiveNoteMode == .Idle && LeftCtrl.Down && Keyboard.KeyPressed == .L {
+            if LoadedCanvas, LoadErr := LoadCanvas(Son.Canvas.Name); LoadErr == os.ERROR_NONE {
                 DeleteCanvas(Son.Canvas)
                 Son.Canvas = LoadedCanvas
                 Canvas = LoadedCanvas
-            }
-             else 
-            {
+            } else {
                 fmt.eprintfln("Failed to load canvas \"%v\" (error %v)", Son.Canvas.Name, LoadErr)
                 return
             }
@@ -1087,11 +983,9 @@ main :: proc()
         UnsetHotNote(Canvas)
         MouseOverCorner: bool
         CornerMouseOver: corner
-        #reverse for &Note, i in Canvas.Notes 
-        {
+        #reverse for &Note, i in Canvas.Notes {
             MouseOverNote := rl.CheckCollisionPointRec(MouseWorldPos, Note.Rec)
-            if MouseOverNote 
-            {
+            if MouseOverNote {
                 SetHotNote(Canvas, i)
                 CornerMouseOver, MouseOverCorner =
                 CollisionPointRecCorner(MouseWorldPos, Note.Rec, CORNER_CHECK_DIMS).?
@@ -1099,13 +993,11 @@ main :: proc()
             }
         }
 
-        if Canvas.ActiveNoteIdx >= 0 
-        {
+        if Canvas.ActiveNoteIdx >= 0 {
             ActiveNote := Canvas.ActiveNote
             Rec := &Canvas.ActiveNote.Rec
 
-            switch Canvas.ActiveNoteMode 
-            {
+            switch Canvas.ActiveNoteMode {
             case .Idle:
             case .Typing:
                 // TODO: (isa): 
@@ -1114,8 +1006,7 @@ main :: proc()
                 //              Cursor
                 //              Moving cursor in text
                 ExitedTyping := Mouse.L.Pressed && Canvas.HotNoteIdx < 0 || Escape.Pressed
-                if ExitedTyping 
-                {
+                if ExitedTyping {
                     ActiveNote.CursorPos = CURSOR_POS_NONE
                     UnsetActiveNote(Canvas)
                     break
@@ -1124,81 +1015,55 @@ main :: proc()
                 ActiveNote.CursorPos =
                     ActiveNote.CursorPos != CURSOR_POS_NONE ? ActiveNote.CursorPos : str.builder_len(ActiveNote.Text) - 1
 
-                if Backspace.Pressed 
-                {
-                    if LeftCtrl.Down 
-                    {
+                if Backspace.Pressed {
+                    if LeftCtrl.Down {
                         Text := str.to_string(ActiveNote.Text)
                         LastByte := str.builder_len(ActiveNote.Text) - 1
                         LastNewLineOffset := str.last_index(Text, "\n")
                         LastSpaceOffset := str.last_index(Text, " ")
 
-                        if LastNewLineOffset == -1 && LastSpaceOffset == -1 
-                        {
+                        if LastNewLineOffset == -1 && LastSpaceOffset == -1 {
                             TxtBoxClearText(&ActiveNote.TextBox)
-                        }
-                         else if LastSpaceOffset == LastByte || LastNewLineOffset == LastByte 
-                        {
+                        } else if LastSpaceOffset == LastByte || LastNewLineOffset == LastByte {
                             TxtBoxBkspcRunes(&ActiveNote.TextBox, 1)
-                        }
-                         else 
-                        {
+                        } else {
                             Offset := max(LastSpaceOffset, LastNewLineOffset) + 1
                             BytesToPop := str.builder_len(ActiveNote.Text) - Offset
                             TxtBoxBkspcBytes(&ActiveNote.TextBox, BytesToPop)
                         }
-                    }
-                     else 
-                    {
+                    } else {
                         TxtBoxBkspcRunes(&ActiveNote.TextBox, 1)
                     }
-                }
-                 else if Backspace.Held &&
+                } else if Backspace.Held &&
                    SonFrameDelta(Backspace.FrameHeldFrom) >= SecondsToFrameCount(0.35, FPS) &&
-                   SonFrameDelta(Backspace.FrameHeldFrom) % SecondsToFrameCount(0.05, FPS) == 0 
-                {
+                   SonFrameDelta(Backspace.FrameHeldFrom) % SecondsToFrameCount(0.05, FPS) == 0 {
                     TxtBoxBkspcRunes(&ActiveNote.TextBox, 1)
-                }
-                 else if LeftCtrl.Down && Keyboard.KeyPressed == .Z 
-                {
-                }
-                 else if LeftCtrl.Down && Keyboard.KeyPressed == .Y 
-                {
-                }
-                 else if UpArr.Pressed ||
-                   (UpArr.Held && IsFrameIntervalWDelay(UpArr.FrameHeldFrom, 0.05, 0.35)) 
-                {
-                }
-                 else if DownArr.Pressed ||
-                   (DownArr.Held && IsFrameIntervalWDelay(DownArr.FrameHeldFrom, 0.05, 0.35)) 
-                {
-                }
-                 else if LeftArr.Pressed ||
-                   (LeftArr.Held && IsFrameIntervalWDelay(LeftArr.FrameHeldFrom, 0.05, 0.35)) 
-                {
+                } else if LeftCtrl.Down && Keyboard.KeyPressed == .Z {
+                    TxtBoxUndo(&ActiveNote.TextBox)
+                } else if LeftCtrl.Down && Keyboard.KeyPressed == .Y {
+                } else if UpArr.Pressed ||
+                   (UpArr.Held && IsFrameIntervalWDelay(UpArr.FrameHeldFrom, 0.05, 0.35)) {
+                } else if DownArr.Pressed ||
+                   (DownArr.Held && IsFrameIntervalWDelay(DownArr.FrameHeldFrom, 0.05, 0.35)) {
+                } else if LeftArr.Pressed ||
+                   (LeftArr.Held && IsFrameIntervalWDelay(LeftArr.FrameHeldFrom, 0.05, 0.35)) {
                     ActiveNote.CursorPos = max(CURSSOR_POS_FRONT, ActiveNote.CursorPos - 1)
-                }
-                 else if RightArr.Pressed ||
-                   (RightArr.Held && IsFrameIntervalWDelay(RightArr.FrameHeldFrom, 0.05, 0.35)) 
-                {
+                } else if RightArr.Pressed ||
+                   (RightArr.Held && IsFrameIntervalWDelay(RightArr.FrameHeldFrom, 0.05, 0.35)) {
                     ActiveNote.CursorPos = min(
                         str.builder_len(ActiveNote.Text) - 1,
                         ActiveNote.CursorPos + 1,
                     )
-                }
-                 else 
-                {
+                } else {
                     Rune := Keyboard.CharPressed
                     Rune = Enter.Pressed ? '\n' : Rune
-                    if Rune != 0 
-                    {
+                    if Rune != 0 {
                         TxtBoxAddText(&ActiveNote.TextBox, Rune)
                     }
                 }
 
             case .Moving:
-                if Mouse.L.Released 
-                {
+                if Mouse.L.Released {
                     UnsetActiveNote(Canvas)
                     break
                 }
@@ -1207,62 +1072,46 @@ main :: proc()
                 Rec.y += ScaledMDelta.y
 
             case .Resizing:
-                if Mouse.L.Released 
-                {
+                if Mouse.L.Released {
                     UnsetActiveNote(Canvas)
                     break
                 }
 
                 ResizeRecFromCorner(Rec, Canvas.ResizingCorner, ScaledMDelta)
             }
-        }
-         else if Canvas.HotNoteIdx >= 0 
-        {
+        } else if Canvas.HotNoteIdx >= 0 {
             // TODO: (isa): Check that both clicks were inside the note. 
             // Currently it activates even if the first click was outside it.
             // TODO: (isa): Also, double clicking on another note while in text mode on another
             // does not switch focus
-            if Mouse.L.DoubleClicked 
-            {
+            if Mouse.L.DoubleClicked {
                 SetActiveNote(Canvas, Canvas.HotNoteIdx)
                 Canvas.ActiveNoteMode = .Typing
                 ResetMouseButtonClicked(&Mouse.L)
-            }
-             else if Mouse.L.Down 
-            {
+            } else if Mouse.L.Down {
                 SetActiveNote(Canvas, Canvas.HotNoteIdx)
 
-                if MouseOverCorner 
-                {
+                if MouseOverCorner {
                     Canvas.ActiveNoteMode = .Resizing
                     Canvas.ResizingCorner = CornerMouseOver
-                }
-                 else 
-                {
+                } else {
                     Canvas.ActiveNoteMode = .Moving
                 }
-            }
-             else if Keyboard.KeyPressed == .D && LeftShift.Down 
-            {
+            } else if Keyboard.KeyPressed == .D && LeftShift.Down {
                 unordered_remove(&Canvas.Notes, Canvas.HotNoteIdx)
                 UnsetHotNote(Canvas)
             }
         }
 
-        for &Note, i in Canvas.Notes 
-        {
+        for &Note, i in Canvas.Notes {
             rl.DrawRectangleRec(Note.Rec, Note.RecColor)
             RenderNoteTextBox(&Note, Canvas.Font)
 
-            if i == Canvas.ActiveNoteIdx 
-            {
+            if i == Canvas.ActiveNoteIdx {
                 DrawNoteOutline(Note)
-                if Canvas.ActiveNoteMode == .Resizing 
-                {
+                if Canvas.ActiveNoteMode == .Resizing {
                     DrawCornerLines(Note, Canvas.ResizingCorner, MouseWorldPos)
-                }
-                 else if Canvas.ActiveNoteMode == .Typing 
-                {
+                } else if Canvas.ActiveNoteMode == .Typing {
                     RecOffset := f32(NOTE_TEXT_OFFSET - 2)
                     TextRec := RlRecAdd(
                         Note.Rec,
@@ -1270,12 +1119,9 @@ main :: proc()
                     )
                     rl.DrawRectangleLinesEx(TextRec, 1, rl.BLACK)
                 }
-            }
-             else if i == Canvas.HotNoteIdx 
-            {
+            } else if i == Canvas.HotNoteIdx {
                 DrawNoteOutline(Note)
-                if MouseOverCorner 
-                {
+                if MouseOverCorner {
                     DrawCornerLines(Note, CornerMouseOver, MouseWorldPos)
                 }
             }
